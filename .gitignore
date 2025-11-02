@@ -1,5 +1,8 @@
 ﻿# Environment variables
-.env
+album-share-web/.env
 
 #package lock
 package-lock.json
+
+#node mods
+node_modules/
