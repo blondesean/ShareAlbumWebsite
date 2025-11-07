@@ -13,7 +13,7 @@ export default function App() {
         async function fetchPhotos() {
             try {
                 const response = await fetch(
-                    "https://5gfpyeaktk.execute-api.us-west-2.amazonaws.com/prod/photos"
+                    "https://o6oa6tspdc.execute-api.us-west-2.amazonaws.com/prod/photos"
                 );
                 if (!response.ok) throw new Error("Failed to fetch photos");
                 const data = await response.json();
