@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { signedFetch } from "./utils/signedFetch"; 
 
 interface Photo {
     key: string;
@@ -12,8 +13,11 @@ export default function App() {
     useEffect(() => {
         async function fetchPhotos() {
             try {
-                const response = await fetch(
-                    "https://o6oa6tspdc.execute-api.us-west-2.amazonaws.com/prod/photos"
+                console.log("API URL:", import.meta.env.VITE_API_URL);
+                
+
+                const response = await signedFetch(
+                    import.meta.env.VITE_API_URL
                 );
                 if (!response.ok) throw new Error("Failed to fetch photos");
                 const data = await response.json();
