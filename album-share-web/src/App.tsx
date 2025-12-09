@@ -24,7 +24,17 @@ interface Photo {
     tags?: string[];
 }
 
-const AVAILABLE_TAGS = import.meta.env.VITE_AVAILABLE_TAGS?.split(",") || ["Jeff", "Sean", "Karen"];
+const BASE_TAGS = import.meta.env.VITE_AVAILABLE_TAGS?.split(",") || 
+    ["Jeff", "Karen", "Sean", "Kati", "Julia"
+        , "Granmare", "Papa", "Gram", "Grandad"
+        , "Mark", "Bob", "Greg", "Elizabeth", "Carie", "Ann Marie", "Mike"
+        , "McGuire", "Jay", "Matt", "Lizzie", "Glenn", "Danny", "Kyle", "Steven", "Nicole"
+        , "Kristen", "John", "Lee", "Carl", "Kristie", "Kathy"
+        , "Daniel", "Kurt", "Bob"
+        , "Patrick"
+        , "Braden", "Kara", "Kelsey", "Kaitlyn"
+        , "Steve", "Sean E"
+        , "Buddy", "Gigi", "Eddie", "Animals"];
 
 function PhotoApp({ signOut }: { signOut?: () => void }) {
     const [photos, setPhotos] = useState<Photo[]>([]);
@@ -36,6 +46,11 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
     const [selectedFilter, setSelectedFilter] = useState<string | null>(null);
     const [showTagRequest, setShowTagRequest] = useState(false);
     const [requestedTag, setRequestedTag] = useState("");
+    const [availableTags, setAvailableTags] = useState<string[]>(() => {
+        const customTags = localStorage.getItem("customTags");
+        const custom = customTags ? JSON.parse(customTags) : [];
+        return [...BASE_TAGS, ...custom];
+    });
 
     useEffect(() => {
         async function fetchPhotos() {
@@ -203,28 +218,32 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
         }
     };
 
-    const requestNewTag = async () => {
+    const createNewTag = async () => {
         if (!requestedTag.trim()) return;
         
-        try {
-            const session = await fetchAuthSession();
-            const idToken = session.tokens?.idToken?.toString();
-
-            if (!idToken) {
-                throw new Error("No authentication token available");
-            }
-
-            // You can implement a backend endpoint for tag requests
-            // For now, just log it or send to a simple endpoint
-            console.log("Tag requested:", requestedTag);
-            alert(`Tag request submitted: "${requestedTag}"\n\nAn admin will review your request.`);
-            
-            setRequestedTag("");
-            setShowTagRequest(false);
-        } catch (err: any) {
-            console.error(err);
-            setError(err.message);
+        const newTag = requestedTag.trim();
+        
+        // Check if tag already exists
+        if (availableTags.includes(newTag)) {
+            alert("This tag already exists!");
+            return;
         }
+        
+        // Add to available tags
+        const updatedTags = [...availableTags, newTag];
+        setAvailableTags(updatedTags);
+        
+        // Save custom tags to localStorage (only the ones not in BASE_TAGS)
+        const customTags = updatedTags.filter(tag => !BASE_TAGS.includes(tag));
+        localStorage.setItem("customTags", JSON.stringify(customTags));
+        
+        // Apply the new tag to the current photo
+        if (tagModal) {
+            await toggleTag(tagModal.photoKey, newTag);
+        }
+        
+        setRequestedTag("");
+        setShowTagRequest(false);
     };
 
     const filteredPhotos = selectedFilter
@@ -242,7 +261,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             </div>
 
             {/* Tag Filter */}
-            <div style={{ marginBottom: "1rem", display: "flex", gap: "8px", alignItems: "center" }}>
+            <div style={{ marginBottom: "1rem", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
                 <span>Filter by tag:</span>
                 <button
                     onClick={() => setSelectedFilter(null)}
@@ -257,7 +276,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 >
                     All
                 </button>
-                {AVAILABLE_TAGS.map((tag: string) => (
+                {availableTags.map((tag: string) => (
                     <button
                         key={tag}
                         onClick={() => setSelectedFilter(tag)}
@@ -411,7 +430,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                     >
                         <h3 style={{ marginTop: 0 }}>Select Tags</h3>
                         <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "300px", overflowY: "auto" }}>
-                            {AVAILABLE_TAGS.map((tag: string) => {
+                            {availableTags.map((tag: string) => {
                                 const isSelected = photoTags.get(tagModal.photoKey)?.has(tag) || false;
                                 return (
                                     <label
@@ -453,7 +472,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                     fontSize: "0.9rem",
                                 }}
                             >
-                                + Request New Tag
+                                + Create Custom Tag (only for you)
                             </button>
                         ) : (
                             <div style={{ marginTop: "12px" }}>
@@ -470,16 +489,17 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                         marginBottom: "8px",
                                     }}
                                     onKeyDown={(e) => {
-                                        if (e.key === "Enter") requestNewTag();
+                                        if (e.key === "Enter") createNewTag();
                                         if (e.key === "Escape") {
                                             setShowTagRequest(false);
                                             setRequestedTag("");
                                         }
                                     }}
+                                    autoFocus
                                 />
                                 <div style={{ display: "flex", gap: "8px" }}>
                                     <button
-                                        onClick={requestNewTag}
+                                        onClick={createNewTag}
                                         style={{
                                             flex: 1,
                                             padding: "6px 12px",
@@ -490,7 +510,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                             cursor: "pointer",
                                         }}
                                     >
-                                        Submit
+                                        Create & Apply
                                     </button>
                                     <button
                                         onClick={() => {
