@@ -53,8 +53,13 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
         const custom = customTags ? JSON.parse(customTags) : [];
         return [...BASE_TAGS, ...custom];
     });
-    const [yearTags, setYearTags] = useState<Set<string>>(new Set());
-    const [monthTags, setMonthTags] = useState<Set<string>>(new Set());
+    // Always show all years from 1960 to 2025 in the dropdown
+    const ALL_YEARS = Array.from({ length: 2025 - 1960 + 1 }, (_, i) => String(1960 + i));
+    const yearTags = new Set(ALL_YEARS);
+    // Always show all 12 months in the dropdown
+    const ALL_MONTHS = ["January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December"];
+    const monthTags = new Set(ALL_MONTHS);
     const [selectedYears, setSelectedYears] = useState<Set<string>>(new Set());
     const [selectedMonths, setSelectedMonths] = useState<Set<string>>(new Set());
     const [showYearDropdown, setShowYearDropdown] = useState(false);
@@ -97,17 +102,70 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
         return null;
     };
 
+    // Helper function to filter photos: only filter out non-_a.jpg versions if _a.jpg exists
+    const filterDuplicatePhotos = (photos: Photo[]): Photo[] => {
+        // Create a set of all photo keys for quick lookup
+        const photoKeys = new Set(photos.map(p => p.key));
+        
+        return photos.filter((photo) => {
+            const key = photo.key;
+            
+
+            
+            // If it's an _a.jpg version, always keep it
+            if (key.includes("_a.jpg")) {
+                return true;
+            }
+            
+            const filename = key.split('/').pop() || key;
+            const lastSlashIndex = key.lastIndexOf('/');
+            const path = lastSlashIndex >= 0 ? key.substring(0, lastSlashIndex + 1) : '';
+            
+            // Filter out _b.jpg if _a.jpg exists
+            if (filename.includes("_b.jpg")) {
+                // Try to find the corresponding _a.jpg version
+                const baseName = filename.replace("_b.jpg", "");
+                const enhancedName = `${baseName}_a.jpg`;
+                const enhancedKey = path + enhancedName;
+                
+                // If _a.jpg version exists, filter out this _b.jpg
+                if (photoKeys.has(enhancedKey)) {
+                    return false;
+                }
+            }
+            
+            // Check if this photo matches the pattern <YEAR>_<MONTH>_<NUMBER>.jpg
+            // and if there's a corresponding _a.jpg version
+            // Pattern: <YEAR>_<MONTH>_<NUMBER>.jpg
+            // We'll check if removing .jpg and adding _a.jpg exists
+            if (filename.endsWith(".jpg") && !filename.includes("_a.jpg") && !filename.includes("_b.jpg")) {
+                // Try to find the _a.jpg version
+                const baseName = filename.replace(".jpg", "");
+                const enhancedName = `${baseName}_a.jpg`;
+                const enhancedKey = path + enhancedName;
+                
+                // If enhanced version exists, filter out this one
+                if (photoKeys.has(enhancedKey)) {
+                    return false;
+                }
+            }
+            return true;
+        });
+    };
+
     useEffect(() => {
         async function fetchPhotos() {
             try {
-                console.log("API URL:", import.meta.env.VITE_API_URL);
 
-                // Get Cognito ID token
+
+                // Get Cognito ID token (required for API Gateway Cognito User Pool authorizer)
                 const session = await fetchAuthSession();
                 const idToken = session.tokens?.idToken?.toString();
 
+
+
                 if (!idToken) {
-                    throw new Error("No authentication token available");
+                    throw new Error("No ID token available - please sign out and sign back in");
                 }
 
                 const response = await fetch(import.meta.env.VITE_API_URL, {
@@ -116,12 +174,16 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                     },
                 });
 
-                if (!response.ok) throw new Error("Failed to fetch photos");
+                if (!response.ok) {
+                    const text = await response.text();
+                    throw new Error(`Failed to fetch photos: ${response.status} ${text}`);
+                }
+                  
                 const data = await response.json();
                 
-                // Filter to only show photos containing "_a.jpg"
-                const filteredPhotos = data.filter((photo: Photo) => photo.key.includes("_a.jpg"));
-                console.log("Sample photo keys:", filteredPhotos.slice(0, 5).map((p: Photo) => p.key));
+
+                
+                const filteredPhotos = filterDuplicatePhotos(data);
                 
                 // Extract years and months from photo names and collect unique values
                 const detectedYears = new Set<string>();
@@ -132,15 +194,11 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                         detectedYears.add(year);
                     }
                     const month = extractMonthFromPhotoName(photo.key);
-                    console.log(`Photo: ${photo.key}, Extracted month: ${month}`);
                     if (month) {
                         detectedMonths.add(month);
                     }
                 });
-                console.log("Detected years:", Array.from(detectedYears));
-                console.log("Detected months:", Array.from(detectedMonths));
-                setYearTags(detectedYears);
-                setMonthTags(detectedMonths);
+                // yearTags and monthTags always contain all years/months, so we don't need to update them
                 
                 // Mark favorites and sort (favorites first)
                 const photosWithFavorites = filteredPhotos.map((photo: Photo) => ({
@@ -177,7 +235,6 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
         for (const photo of photosList) {
             try {
                 const apiUrl = import.meta.env.VITE_API_URL.replace("/photos", `/tags?photoKey=${encodeURIComponent(photo.key)}`);
-                console.log("Fetching tags from:", apiUrl);
                 const response = await fetch(apiUrl, {
                     headers: {
                         Authorization: `Bearer ${idToken}`,
@@ -186,7 +243,6 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 
                 if (response.ok) {
                     const data = await response.json();
-                    console.log(`Tags for ${photo.key}:`, data);
                     const tags = new Set<string>(data.tags?.map((t: { tag: string }) => t.tag) || []);
                     
                     // Add year and month tags if photo name contains them
@@ -238,7 +294,6 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             }
         }
         
-        console.log("Final tags map:", tagsMap);
         setPhotoTags(tagsMap);
     };
 
@@ -248,7 +303,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             const idToken = session.tokens?.idToken?.toString();
 
             if (!idToken) {
-                throw new Error("No authentication token available");
+                throw new Error("No ID token available");
             }
 
             const isFavorite = favorites.has(photoKey);
@@ -286,7 +341,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             const idToken = session.tokens?.idToken?.toString();
 
             if (!idToken) {
-                throw new Error("No authentication token available");
+                throw new Error("No ID token available");
             }
 
             const currentTags = photoTags.get(photoKey) || new Set<string>();
@@ -374,7 +429,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 const idToken = session.tokens?.idToken?.toString();
 
                 if (!idToken) {
-                    throw new Error("No authentication token available");
+                    throw new Error("No ID token available");
                 }
 
                 // Step 1: Get upload URL
@@ -442,52 +497,53 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 try {
                     const session = await fetchAuthSession();
                     const idToken = session.tokens?.idToken?.toString();
+
+                    if (!idToken) {
+                        throw new Error("No ID token available");
+                    }
                     
-                    if (idToken) {
-                        const response = await fetch(import.meta.env.VITE_API_URL, {
-                            headers: {
-                                Authorization: `Bearer ${idToken}`,
-                            },
+                    const response = await fetch(import.meta.env.VITE_API_URL, {
+                        headers: {
+                            Authorization: `Bearer ${idToken}`,
+                        },
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        const filteredPhotos = data.filter((photo: Photo) => photo.key.includes("_a.jpg"));
+                        
+                        // Extract years and months from photo names and collect unique values
+                        const detectedYears = new Set<string>();
+                        const detectedMonths = new Set<string>();
+                        filteredPhotos.forEach((photo: Photo) => {
+                            const year = extractYearFromPhotoName(photo.key);
+                            if (year) {
+                                detectedYears.add(year);
+                            }
+                            const month = extractMonthFromPhotoName(photo.key);
+                            if (month) {
+                                detectedMonths.add(month);
+                            }
                         });
+                        // Note: yearTags and monthTags are set in the main useEffect
+                        
+                        const photosWithFavorites = filteredPhotos.map((photo: Photo) => ({
+                            ...photo,
+                            isFavorite: photo.isFavorite || false,
+                        }));
+                        
+                        photosWithFavorites.sort((a: Photo, b: Photo) => {
+                            if (a.isFavorite && !b.isFavorite) return -1;
+                            if (!a.isFavorite && b.isFavorite) return 1;
+                            return 0;
+                        });
+                        
+                        setPhotos(photosWithFavorites);
+                        
+                        const favSet = new Set<string>(photosWithFavorites.filter((p: Photo) => p.isFavorite).map((p: Photo) => p.key));
+                        setFavorites(favSet);
 
-                        if (response.ok) {
-                            const data = await response.json();
-                            const filteredPhotos = data.filter((photo: Photo) => photo.key.includes("_a.jpg"));
-                            
-                            // Extract years and months from photo names and collect unique values
-                            const detectedYears = new Set<string>();
-                            const detectedMonths = new Set<string>();
-                            filteredPhotos.forEach((photo: Photo) => {
-                                const year = extractYearFromPhotoName(photo.key);
-                                if (year) {
-                                    detectedYears.add(year);
-                                }
-                                const month = extractMonthFromPhotoName(photo.key);
-                                if (month) {
-                                    detectedMonths.add(month);
-                                }
-                            });
-                            setYearTags(detectedYears);
-                            setMonthTags(detectedMonths);
-                            
-                            const photosWithFavorites = filteredPhotos.map((photo: Photo) => ({
-                                ...photo,
-                                isFavorite: photo.isFavorite || false,
-                            }));
-                            
-                            photosWithFavorites.sort((a: Photo, b: Photo) => {
-                                if (a.isFavorite && !b.isFavorite) return -1;
-                                if (!a.isFavorite && b.isFavorite) return 1;
-                                return 0;
-                            });
-                            
-                            setPhotos(photosWithFavorites);
-                            
-                            const favSet = new Set<string>(photosWithFavorites.filter((p: Photo) => p.isFavorite).map((p: Photo) => p.key));
-                            setFavorites(favSet);
-
-                            await fetchAllTags(idToken, photosWithFavorites);
-                        }
+                        await fetchAllTags(idToken, photosWithFavorites);
                     }
                 } catch (refreshError) {
                     console.error("Failed to refresh photos:", refreshError);
@@ -574,7 +630,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             }}
         >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-                <h1>Family Album</h1>
+                <h1>Family Shared Album</h1>
                 <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
                     {/* Upload Button */}
                     <div style={{ position: "relative" }}>
@@ -605,6 +661,9 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                         </label>
                     </div>
                     
+
+
+
 
                     <button onClick={signOut}>Sign Out</button>
                 </div>
@@ -655,41 +714,42 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 </button>
                 
                 {/* Year Dropdown */}
-                {yearTags.size > 0 && (
-                    <div style={{ position: "relative" }}>
-                        <button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                setShowYearDropdown(!showYearDropdown);
-                                setShowMonthDropdown(false);
-                            }}
+                <div style={{ position: "relative" }}>
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setShowYearDropdown(!showYearDropdown);
+                            setShowMonthDropdown(false);
+                        }}
+                        style={{
+                            padding: "6px 12px",
+                            border: "1px solid #28a745",
+                            borderRadius: "4px",
+                            background: selectedYears.size > 0 ? "#28a745" : "white",
+                            color: selectedYears.size > 0 ? "white" : "#28a745",
+                            cursor: "pointer",
+                            fontWeight: "bold",
+                        }}
+                    >
+                        Years {selectedYears.size > 0 ? `(${selectedYears.size})` : ""} ▼
+                    </button>
+                    {showYearDropdown && (
+                        <div
+                            onClick={(e) => e.stopPropagation()}
                             style={{
-                                padding: "6px 12px",
+                                position: "absolute",
+                                top: "100%",
+                                left: 0,
+                                backgroundColor: "white",
                                 border: "1px solid #28a745",
                                 borderRadius: "4px",
-                                background: selectedYears.size > 0 ? "#28a745" : "white",
-                                color: selectedYears.size > 0 ? "white" : "#28a745",
-                                cursor: "pointer",
-                                fontWeight: "bold",
+                                boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+                                zIndex: 1000,
+                                minWidth: "120px",
+                                maxHeight: "300px",
+                                overflowY: "auto",
                             }}
                         >
-                            Years {selectedYears.size > 0 ? `(${selectedYears.size})` : ""} ▼
-                        </button>
-                        {showYearDropdown && (
-                            <div
-                                onClick={(e) => e.stopPropagation()}
-                                style={{
-                                    position: "absolute",
-                                    top: "100%",
-                                    left: 0,
-                                    backgroundColor: "white",
-                                    border: "1px solid #28a745",
-                                    borderRadius: "4px",
-                                    boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
-                                    zIndex: 1000,
-                                    minWidth: "120px",
-                                }}
-                            >
                                 {Array.from(yearTags).sort().map((year: string) => (
                                     <label
                                         key={year}
@@ -732,7 +792,6 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                             </div>
                         )}
                     </div>
-                )}
                 
                 {/* Month Dropdown */}
                 {monthTags.size > 0 && (
@@ -863,33 +922,47 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                             }}
                             style={{ cursor: "pointer", position: "relative" }}
                         >
-                            <img
-                                src={photo.url}
-                                alt={photo.key}
-                                style={{
-                                    width: "100%",
-                                    borderRadius: "8px",
-                                    border: favorites.has(photo.key) ? "4px solid gold" : "none",
-                                }}
-                            />
-                            <p style={{ fontSize: "0.9rem" }}>{photo.key}</p>
-                            
-                            {/* Favorite Count - underneath photo */}
-                            {photo.favoriteCount !== undefined && photo.favoriteCount > 0 && (
-                                <div
+                            <div style={{ position: "relative" }}>
+                                <img
+                                    src={photo.url}
+                                    alt={photo.key}
                                     style={{
-                                        display: "flex",
-                                        alignItems: "center",
-                                        justifyContent: "center",
-                                        gap: "4px",
-                                        fontSize: "0.8rem",
-                                        color: "#dc3545",
-                                        marginTop: "4px",
+                                        width: "100%",
+                                        borderRadius: "8px",
+                                        border: favorites.has(photo.key) ? "4px solid gold" : "none",
                                     }}
-                                >
-                                    ❤️ {photo.favoriteCount}
-                                </div>
-                            )}
+
+
+                                />
+                                {/* Favorite Count - bottom right corner of photo */}
+                                {photo.favoriteCount !== undefined && photo.favoriteCount > 0 && (
+                                    <div
+                                        style={{
+                                            position: "absolute",
+                                            bottom: "8px",
+                                            right: "8px",
+                                            display: "flex",
+                                            alignItems: "center",
+                                            gap: "4px",
+                                            fontSize: "0.9rem",
+                                            color: "white",
+                                            backgroundColor: "rgba(0, 0, 0, 0.6)",
+                                            padding: "4px 8px",
+                                            borderRadius: "12px",
+                                            fontWeight: "bold",
+                                        }}
+                                    >
+                                        ❤️ {photo.favoriteCount}
+                                    </div>
+                                )}
+                            </div>
+                            <p style={{ 
+                                fontSize: "0.9rem", 
+                                wordWrap: "break-word", 
+                                overflowWrap: "break-word",
+                                hyphens: "auto",
+                                margin: "4px 0"
+                            }}>{photo.key}</p>
                             {tags.size > 0 && (
                                 <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginTop: "4px" }}>
                                     {Array.from(tags).map((tag) => {
@@ -900,13 +973,10 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                         const isBaseTag = BASE_TAGS.includes(tag);
                                         const isUserTag = !isBaseTag && !isYearTag && !isMonthTag;
                                         
-                                        // Debug logging
-                                        if (!isYearTag && !isMonthTag) {
-                                            console.log(`Tag: "${tag}", isBaseTag: ${isBaseTag}, isUserTag: ${isUserTag}, BASE_TAGS includes: ${BASE_TAGS.includes(tag)}`);
-                                        }
+
                                         
-                                        let backgroundColor = "#e0e0e0"; // Default grey for base tags
-                                        let color = "inherit";
+                                        let backgroundColor = "#e6ccff"; // Purple for base tags (people & tags)
+                                        let color = "#6f42c1";
                                         
                                         if (isYearTag) {
                                             backgroundColor = "#d4edda";
@@ -915,10 +985,10 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                             backgroundColor = "#cce7ff";
                                             color = "#0056b3";
                                         } else if (isUserTag) {
-                                            backgroundColor = "#e6ccff";
-                                            color = "#6f42c1";
+                                            backgroundColor = "#ffc0cb"; // Pink for custom tags
+                                            color = "#8b008b";
                                         }
-                                        // Base tags keep default grey styling
+                                        // Base tags use purple styling
                                         
                                         return (
                                             <span
@@ -1036,6 +1106,18 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                 <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
                                     {availableTags.map((tag: string) => {
                                         const isSelected = photoTags.get(tagModal.photoKey)?.has(tag) || false;
+                                        const isBaseTag = BASE_TAGS.includes(tag);
+                                        const isUserTag = !isBaseTag;
+                                        
+                                        // Set colors based on tag type
+                                        let backgroundColor = isSelected ? "#f0e6ff" : "transparent"; // Purple for base tags
+                                        let textColor = isSelected ? "#6f42c1" : "inherit";
+                                        
+                                        if (isUserTag) {
+                                            backgroundColor = isSelected ? "#ffc0cb" : "transparent"; // Pink for custom tags
+                                            textColor = isSelected ? "#8b008b" : "inherit";
+                                        }
+                                        
                                         return (
                                             <label
                                                 key={tag}
@@ -1046,7 +1128,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                                     padding: "4px 6px",
                                                     cursor: "pointer",
                                                     borderRadius: "4px",
-                                                    backgroundColor: isSelected ? "#f0e6ff" : "transparent",
+                                                    backgroundColor,
                                                     fontSize: "0.85rem",
                                                 }}
                                             >
@@ -1056,7 +1138,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                                     onChange={() => toggleTag(tagModal.photoKey, tag)}
                                                     style={{ cursor: "pointer" }}
                                                 />
-                                                <span style={{ color: isSelected ? "#6f42c1" : "inherit" }}>{tag}</span>
+                                                <span style={{ color: textColor }}>{tag}</span>
                                             </label>
                                         );
                                     })}
@@ -1068,7 +1150,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                 <h4 style={{ margin: "0 0 8px 0", fontSize: "0.9rem", color: "#666", borderBottom: "1px solid #eee", paddingBottom: "4px" }}>
                                     Years
                                 </h4>
-                                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                <div style={{ display: "flex", flexDirection: "column", gap: "4px", maxHeight: "350px", overflowY: "auto" }}>
                                     {Array.from(yearTags).sort().map((year: string) => {
                                         const isSelected = photoTags.get(tagModal.photoKey)?.has(year) || false;
                                         return (
