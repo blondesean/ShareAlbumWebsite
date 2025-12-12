@@ -22,6 +22,7 @@ interface Photo {
     url: string;
     isFavorite?: boolean;
     tags?: string[];
+    favoriteCount?: number;
 }
 
 const BASE_TAGS = import.meta.env.VITE_AVAILABLE_TAGS?.split(",") || 
@@ -34,6 +35,7 @@ const BASE_TAGS = import.meta.env.VITE_AVAILABLE_TAGS?.split(",") ||
         , "Patrick"
         , "Braden", "Kara", "Kelsey", "Kaitlyn"
         , "Steve", "Sean E"
+        , "Owen", "Margot"
         , "Buddy", "Gigi", "Eddie", "Animals"];
 
 function PhotoApp({ signOut }: { signOut?: () => void }) {
@@ -51,6 +53,49 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
         const custom = customTags ? JSON.parse(customTags) : [];
         return [...BASE_TAGS, ...custom];
     });
+    const [yearTags, setYearTags] = useState<Set<string>>(new Set());
+    const [monthTags, setMonthTags] = useState<Set<string>>(new Set());
+    const [selectedYears, setSelectedYears] = useState<Set<string>>(new Set());
+    const [selectedMonths, setSelectedMonths] = useState<Set<string>>(new Set());
+    const [showYearDropdown, setShowYearDropdown] = useState(false);
+    const [showMonthDropdown, setShowMonthDropdown] = useState(false);
+    const [uploading, setUploading] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState<string | null>(null);
+    const [uploadQueue, setUploadQueue] = useState<{total: number, completed: number, failed: number}>({total: 0, completed: 0, failed: 0});
+
+    // Helper function to extract year from photo name
+    const extractYearFromPhotoName = (photoKey: string): string | null => {
+        // Extract filename from the key (remove path if present)
+        const filename = photoKey.split('/').pop() || photoKey;
+        
+        // Check if filename starts with a 4-digit year (19xx or 20xx)
+        const yearMatch = filename.match(/^(19\d{2}|20\d{2})/);
+        return yearMatch ? yearMatch[1] : null;
+    };
+
+    // Helper function to extract month from photo name
+    const extractMonthFromPhotoName = (photoKey: string): string | null => {
+        // Extract filename from the key (remove path if present)
+        const filename = photoKey.split('/').pop() || photoKey;
+        
+        // List of month names to search for
+        const monthNames = [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"
+        ];
+        
+        // Convert filename to lowercase for case-insensitive matching
+        const lowerFilename = filename.toLowerCase();
+        
+        // Check if any month name appears in the filename
+        for (const month of monthNames) {
+            if (lowerFilename.includes(month.toLowerCase())) {
+                return month;
+            }
+        }
+        
+        return null;
+    };
 
     useEffect(() => {
         async function fetchPhotos() {
@@ -76,6 +121,26 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 
                 // Filter to only show photos containing "_a.jpg"
                 const filteredPhotos = data.filter((photo: Photo) => photo.key.includes("_a.jpg"));
+                console.log("Sample photo keys:", filteredPhotos.slice(0, 5).map((p: Photo) => p.key));
+                
+                // Extract years and months from photo names and collect unique values
+                const detectedYears = new Set<string>();
+                const detectedMonths = new Set<string>();
+                filteredPhotos.forEach((photo: Photo) => {
+                    const year = extractYearFromPhotoName(photo.key);
+                    if (year) {
+                        detectedYears.add(year);
+                    }
+                    const month = extractMonthFromPhotoName(photo.key);
+                    console.log(`Photo: ${photo.key}, Extracted month: ${month}`);
+                    if (month) {
+                        detectedMonths.add(month);
+                    }
+                });
+                console.log("Detected years:", Array.from(detectedYears));
+                console.log("Detected months:", Array.from(detectedMonths));
+                setYearTags(detectedYears);
+                setMonthTags(detectedMonths);
                 
                 // Mark favorites and sort (favorites first)
                 const photosWithFavorites = filteredPhotos.map((photo: Photo) => ({
@@ -123,14 +188,53 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                     const data = await response.json();
                     console.log(`Tags for ${photo.key}:`, data);
                     const tags = new Set<string>(data.tags?.map((t: { tag: string }) => t.tag) || []);
+                    
+                    // Add year and month tags if photo name contains them
+                    const year = extractYearFromPhotoName(photo.key);
+                    if (year) {
+                        tags.add(year);
+                    }
+                    const month = extractMonthFromPhotoName(photo.key);
+                    if (month) {
+                        tags.add(month);
+                    }
+                    
                     if (tags.size > 0) {
                         tagsMap.set(photo.key, tags);
                     }
                 } else {
                     console.warn(`Failed to fetch tags for ${photo.key}, status:`, response.status);
+                    
+                    // Even if API call fails, still add year and month tags if available
+                    const tags = new Set<string>();
+                    const year = extractYearFromPhotoName(photo.key);
+                    if (year) {
+                        tags.add(year);
+                    }
+                    const month = extractMonthFromPhotoName(photo.key);
+                    if (month) {
+                        tags.add(month);
+                    }
+                    if (tags.size > 0) {
+                        tagsMap.set(photo.key, tags);
+                    }
                 }
             } catch (err) {
                 console.error(`Failed to fetch tags for ${photo.key}`, err);
+                
+                // Even if API call fails, still add year and month tags if available
+                const tags = new Set<string>();
+                const year = extractYearFromPhotoName(photo.key);
+                if (year) {
+                    tags.add(year);
+                }
+                const month = extractMonthFromPhotoName(photo.key);
+                if (month) {
+                    tags.add(month);
+                }
+                if (tags.size > 0) {
+                    tagsMap.set(photo.key, tags);
+                }
             }
         }
         
@@ -246,40 +350,485 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
         setShowTagRequest(false);
     };
 
-    const filteredPhotos = selectedFilter
-        ? photos.filter((photo) => photoTags.get(photo.key)?.has(selectedFilter))
-        : photos;
+
+
+    const uploadMultiplePhotos = async (files: File[]) => {
+        setUploading(true);
+        setUploadQueue({total: files.length, completed: 0, failed: 0});
+        setUploadProgress(`Uploading ${files.length} photos...`);
+
+        const results = {
+            successful: 0,
+            failed: 0,
+            errors: [] as string[]
+        };
+
+        // Upload files sequentially to avoid overwhelming the API
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+            try {
+                setUploadProgress(`Uploading ${i + 1} of ${files.length}: ${file.name}`);
+                
+                // Get Cognito ID token
+                const session = await fetchAuthSession();
+                const idToken = session.tokens?.idToken?.toString();
+
+                if (!idToken) {
+                    throw new Error("No authentication token available");
+                }
+
+                // Step 1: Get upload URL
+                const uploadApiUrl = 'https://mtkjcuwe3g.execute-api.us-west-2.amazonaws.com/prod/upload-url';
+                const uploadUrlResponse = await fetch(uploadApiUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${idToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        fileName: file.name,
+                        fileType: file.type
+                    })
+                });
+
+                if (!uploadUrlResponse.ok) {
+                    const errorText = await uploadUrlResponse.text();
+                    throw new Error(`Failed to get upload URL: ${uploadUrlResponse.status} - ${errorText}`);
+                }
+
+                const uploadData = await uploadUrlResponse.json();
+                const { uploadUrl, key } = uploadData;
+                
+                if (!uploadUrl) {
+                    throw new Error("No upload URL received from server");
+                }
+
+                // Step 2: Upload file directly to S3
+                const uploadResponse = await fetch(uploadUrl, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': file.type
+                    },
+                    body: file
+                });
+
+                if (!uploadResponse.ok) {
+                    const errorText = await uploadResponse.text();
+                    throw new Error(`Failed to upload to S3: ${uploadResponse.status} - ${errorText}`);
+                }
+
+                results.successful++;
+                console.log(`Upload ${i + 1}/${files.length} successful:`, key);
+                
+                // Update progress
+                setUploadQueue(prev => ({...prev, completed: prev.completed + 1}));
+
+            } catch (err: any) {
+                results.failed++;
+                results.errors.push(`${file.name}: ${err.message}`);
+                console.error(`Upload ${i + 1}/${files.length} failed:`, err);
+                
+                // Update progress
+                setUploadQueue(prev => ({...prev, failed: prev.failed + 1}));
+            }
+        }
+
+        // Show final results
+        if (results.successful > 0) {
+            setUploadProgress(`Upload complete! ${results.successful} photos uploaded successfully.`);
+            
+            // Refresh photos after a short delay
+            setTimeout(async () => {
+                try {
+                    const session = await fetchAuthSession();
+                    const idToken = session.tokens?.idToken?.toString();
+                    
+                    if (idToken) {
+                        const response = await fetch(import.meta.env.VITE_API_URL, {
+                            headers: {
+                                Authorization: `Bearer ${idToken}`,
+                            },
+                        });
+
+                        if (response.ok) {
+                            const data = await response.json();
+                            const filteredPhotos = data.filter((photo: Photo) => photo.key.includes("_a.jpg"));
+                            
+                            // Extract years and months from photo names and collect unique values
+                            const detectedYears = new Set<string>();
+                            const detectedMonths = new Set<string>();
+                            filteredPhotos.forEach((photo: Photo) => {
+                                const year = extractYearFromPhotoName(photo.key);
+                                if (year) {
+                                    detectedYears.add(year);
+                                }
+                                const month = extractMonthFromPhotoName(photo.key);
+                                if (month) {
+                                    detectedMonths.add(month);
+                                }
+                            });
+                            setYearTags(detectedYears);
+                            setMonthTags(detectedMonths);
+                            
+                            const photosWithFavorites = filteredPhotos.map((photo: Photo) => ({
+                                ...photo,
+                                isFavorite: photo.isFavorite || false,
+                            }));
+                            
+                            photosWithFavorites.sort((a: Photo, b: Photo) => {
+                                if (a.isFavorite && !b.isFavorite) return -1;
+                                if (!a.isFavorite && b.isFavorite) return 1;
+                                return 0;
+                            });
+                            
+                            setPhotos(photosWithFavorites);
+                            
+                            const favSet = new Set<string>(photosWithFavorites.filter((p: Photo) => p.isFavorite).map((p: Photo) => p.key));
+                            setFavorites(favSet);
+
+                            await fetchAllTags(idToken, photosWithFavorites);
+                        }
+                    }
+                } catch (refreshError) {
+                    console.error("Failed to refresh photos:", refreshError);
+                }
+                
+                setUploadProgress(null);
+                setUploading(false);
+                setUploadQueue({total: 0, completed: 0, failed: 0});
+            }, 2000);
+        } else {
+            setError(`All uploads failed. ${results.errors.join('; ')}`);
+            setUploadProgress(null);
+            setUploading(false);
+            setUploadQueue({total: 0, completed: 0, failed: 0});
+        }
+
+        if (results.failed > 0) {
+            console.warn("Some uploads failed:", results.errors);
+        }
+    };
+
+    const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const files = event.target.files;
+        if (files && files.length > 0) {
+            const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+            const validFiles: File[] = [];
+            const invalidFiles: string[] = [];
+            
+            // Validate all selected files
+            Array.from(files).forEach(file => {
+                if (allowedTypes.includes(file.type)) {
+                    validFiles.push(file);
+                } else {
+                    invalidFiles.push(file.name);
+                }
+            });
+            
+            if (invalidFiles.length > 0) {
+                setError(`Invalid file types: ${invalidFiles.join(', ')}. Please select only JPEG, PNG, GIF, or WebP files.`);
+                return;
+            }
+            
+            if (validFiles.length > 0) {
+                // Clear any previous errors
+                setError(null);
+                uploadMultiplePhotos(validFiles);
+            }
+        }
+        
+        // Reset the input so the same files can be selected again
+        event.target.value = '';
+    };
+
+    const filteredPhotos = photos.filter((photo) => {
+        const tags = photoTags.get(photo.key) || new Set<string>();
+        
+        // Apply single tag filter if selected
+        if (selectedFilter && !tags.has(selectedFilter)) {
+            return false;
+        }
+        
+        // Apply year filters if any selected
+        if (selectedYears.size > 0) {
+            const hasSelectedYear = Array.from(selectedYears).some(year => tags.has(year));
+            if (!hasSelectedYear) return false;
+        }
+        
+        // Apply month filters if any selected
+        if (selectedMonths.size > 0) {
+            const hasSelectedMonth = Array.from(selectedMonths).some(month => tags.has(month));
+            if (!hasSelectedMonth) return false;
+        }
+        
+        return true;
+    });
 
     return (
         <div
             style={{ padding: "1rem" }}
-            onClick={() => setContextMenu(null)}
+            onClick={() => {
+                setContextMenu(null);
+                setShowYearDropdown(false);
+                setShowMonthDropdown(false);
+            }}
         >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
                 <h1>Family Album</h1>
-                <button onClick={signOut}>Sign Out</button>
+                <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+                    {/* Upload Button */}
+                    <div style={{ position: "relative" }}>
+                        <input
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            onChange={handleFileSelect}
+                            style={{ display: "none" }}
+                            id="photo-upload"
+                            disabled={uploading}
+                        />
+                        <label
+                            htmlFor="photo-upload"
+                            style={{
+                                padding: "8px 16px",
+                                backgroundColor: uploading ? "#6c757d" : "#28a745",
+                                color: "white",
+                                border: "none",
+                                borderRadius: "4px",
+                                cursor: uploading ? "not-allowed" : "pointer",
+                                fontSize: "0.9rem",
+                                fontWeight: "bold",
+                                display: "inline-block",
+                            }}
+                        >
+                            {uploading ? "Uploading..." : "📷 Upload Photos"}
+                        </label>
+                    </div>
+                    
+
+                    <button onClick={signOut}>Sign Out</button>
+                </div>
             </div>
 
-            {/* Tag Filter */}
-            <div style={{ marginBottom: "1rem", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-                <span>Filter by tag:</span>
+            {/* Upload Progress */}
+            {uploadProgress && (
+                <div style={{ 
+                    marginBottom: "1rem", 
+                    padding: "8px 12px", 
+                    backgroundColor: "#d1ecf1", 
+                    color: "#0c5460", 
+                    borderRadius: "4px",
+                    fontSize: "0.9rem"
+                }}>
+                    {uploadProgress}
+                    {uploadQueue.total > 1 && (
+                        <div style={{ fontSize: "0.8rem", marginTop: "4px" }}>
+                            Progress: {uploadQueue.completed + uploadQueue.failed} / {uploadQueue.total} 
+                            {uploadQueue.failed > 0 && ` (${uploadQueue.failed} failed)`}
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* Filter Controls */}
+            <div style={{ marginBottom: "1rem", display: "flex", gap: "16px", alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ fontWeight: "bold" }}>Filters:</span>
+                
+                {/* Clear All Filters */}
                 <button
-                    onClick={() => setSelectedFilter(null)}
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedFilter(null);
+                        setSelectedYears(new Set());
+                        setSelectedMonths(new Set());
+                    }}
                     style={{
                         padding: "6px 12px",
                         border: "1px solid #ccc",
                         borderRadius: "4px",
-                        background: selectedFilter === null ? "#007bff" : "white",
-                        color: selectedFilter === null ? "white" : "black",
+                        background: selectedFilter === null && selectedYears.size === 0 && selectedMonths.size === 0 ? "#007bff" : "white",
+                        color: selectedFilter === null && selectedYears.size === 0 && selectedMonths.size === 0 ? "white" : "black",
                         cursor: "pointer",
                     }}
                 >
-                    All
+                    Clear All
                 </button>
+                
+                {/* Year Dropdown */}
+                {yearTags.size > 0 && (
+                    <div style={{ position: "relative" }}>
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setShowYearDropdown(!showYearDropdown);
+                                setShowMonthDropdown(false);
+                            }}
+                            style={{
+                                padding: "6px 12px",
+                                border: "1px solid #28a745",
+                                borderRadius: "4px",
+                                background: selectedYears.size > 0 ? "#28a745" : "white",
+                                color: selectedYears.size > 0 ? "white" : "#28a745",
+                                cursor: "pointer",
+                                fontWeight: "bold",
+                            }}
+                        >
+                            Years {selectedYears.size > 0 ? `(${selectedYears.size})` : ""} ▼
+                        </button>
+                        {showYearDropdown && (
+                            <div
+                                onClick={(e) => e.stopPropagation()}
+                                style={{
+                                    position: "absolute",
+                                    top: "100%",
+                                    left: 0,
+                                    backgroundColor: "white",
+                                    border: "1px solid #28a745",
+                                    borderRadius: "4px",
+                                    boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+                                    zIndex: 1000,
+                                    minWidth: "120px",
+                                }}
+                            >
+                                {Array.from(yearTags).sort().map((year: string) => (
+                                    <label
+                                        key={year}
+                                        style={{
+                                            display: "flex",
+                                            alignItems: "center",
+                                            gap: "8px",
+                                            padding: "8px 12px",
+                                            cursor: "pointer",
+                                            backgroundColor: selectedYears.has(year) ? "#d4edda" : "transparent",
+                                        }}
+                                        onMouseEnter={(e) => {
+                                            if (!selectedYears.has(year)) {
+                                                e.currentTarget.style.backgroundColor = "#f8f9fa";
+                                            }
+                                        }}
+                                        onMouseLeave={(e) => {
+                                            if (!selectedYears.has(year)) {
+                                                e.currentTarget.style.backgroundColor = "transparent";
+                                            }
+                                        }}
+                                    >
+                                        <input
+                                            type="checkbox"
+                                            checked={selectedYears.has(year)}
+                                            onChange={() => {
+                                                const newSelected = new Set(selectedYears);
+                                                if (newSelected.has(year)) {
+                                                    newSelected.delete(year);
+                                                } else {
+                                                    newSelected.add(year);
+                                                }
+                                                setSelectedYears(newSelected);
+                                            }}
+                                            style={{ cursor: "pointer" }}
+                                        />
+                                        <span style={{ fontWeight: "bold", color: "#155724" }}>{year}</span>
+                                    </label>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                )}
+                
+                {/* Month Dropdown */}
+                {monthTags.size > 0 && (
+                    <div style={{ position: "relative" }}>
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setShowMonthDropdown(!showMonthDropdown);
+                                setShowYearDropdown(false);
+                            }}
+                            style={{
+                                padding: "6px 12px",
+                                border: "1px solid #007bff",
+                                borderRadius: "4px",
+                                background: selectedMonths.size > 0 ? "#007bff" : "white",
+                                color: selectedMonths.size > 0 ? "white" : "#007bff",
+                                cursor: "pointer",
+                                fontWeight: "bold",
+                            }}
+                        >
+                            Months {selectedMonths.size > 0 ? `(${selectedMonths.size})` : ""} ▼
+                        </button>
+                        {showMonthDropdown && (
+                            <div
+                                onClick={(e) => e.stopPropagation()}
+                                style={{
+                                    position: "absolute",
+                                    top: "100%",
+                                    left: 0,
+                                    backgroundColor: "white",
+                                    border: "1px solid #007bff",
+                                    borderRadius: "4px",
+                                    boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+                                    zIndex: 1000,
+                                    minWidth: "140px",
+                                }}
+                            >
+                                {Array.from(monthTags).sort((a, b) => {
+                                    const monthOrder = [
+                                        "January", "February", "March", "April", "May", "June",
+                                        "July", "August", "September", "October", "November", "December"
+                                    ];
+                                    return monthOrder.indexOf(a) - monthOrder.indexOf(b);
+                                }).map((month: string) => (
+                                    <label
+                                        key={month}
+                                        style={{
+                                            display: "flex",
+                                            alignItems: "center",
+                                            gap: "8px",
+                                            padding: "8px 12px",
+                                            cursor: "pointer",
+                                            backgroundColor: selectedMonths.has(month) ? "#cce7ff" : "transparent",
+                                        }}
+                                        onMouseEnter={(e) => {
+                                            if (!selectedMonths.has(month)) {
+                                                e.currentTarget.style.backgroundColor = "#f8f9fa";
+                                            }
+                                        }}
+                                        onMouseLeave={(e) => {
+                                            if (!selectedMonths.has(month)) {
+                                                e.currentTarget.style.backgroundColor = "transparent";
+                                            }
+                                        }}
+                                    >
+                                        <input
+                                            type="checkbox"
+                                            checked={selectedMonths.has(month)}
+                                            onChange={() => {
+                                                const newSelected = new Set(selectedMonths);
+                                                if (newSelected.has(month)) {
+                                                    newSelected.delete(month);
+                                                } else {
+                                                    newSelected.add(month);
+                                                }
+                                                setSelectedMonths(newSelected);
+                                            }}
+                                            style={{ cursor: "pointer" }}
+                                        />
+                                        <span style={{ fontWeight: "bold", color: "#0056b3" }}>{month}</span>
+                                    </label>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                )}
+                
+                {/* Regular Tags Section */}
+                <span style={{ fontWeight: "bold", color: "#666" }}>People & Tags:</span>
                 {availableTags.map((tag: string) => (
                     <button
                         key={tag}
-                        onClick={() => setSelectedFilter(tag)}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedFilter(selectedFilter === tag ? null : tag);
+                        }}
                         style={{
                             padding: "6px 12px",
                             border: "1px solid #ccc",
@@ -312,7 +861,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                 e.preventDefault();
                                 setContextMenu({ x: e.clientX, y: e.clientY, photoKey: photo.key });
                             }}
-                            style={{ cursor: "pointer" }}
+                            style={{ cursor: "pointer", position: "relative" }}
                         >
                             <img
                                 src={photo.url}
@@ -324,21 +873,69 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                 }}
                             />
                             <p style={{ fontSize: "0.9rem" }}>{photo.key}</p>
+                            
+                            {/* Favorite Count - underneath photo */}
+                            {photo.favoriteCount !== undefined && photo.favoriteCount > 0 && (
+                                <div
+                                    style={{
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        gap: "4px",
+                                        fontSize: "0.8rem",
+                                        color: "#dc3545",
+                                        marginTop: "4px",
+                                    }}
+                                >
+                                    ❤️ {photo.favoriteCount}
+                                </div>
+                            )}
                             {tags.size > 0 && (
                                 <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginTop: "4px" }}>
-                                    {Array.from(tags).map((tag) => (
-                                        <span
-                                            key={tag}
-                                            style={{
-                                                fontSize: "0.75rem",
-                                                padding: "2px 6px",
-                                                backgroundColor: "#e0e0e0",
-                                                borderRadius: "4px",
-                                            }}
-                                        >
-                                            {tag}
-                                        </span>
-                                    ))}
+                                    {Array.from(tags).map((tag) => {
+                                        // Check tag type
+                                        const isYearTag = /^(19\d{2}|20\d{2})$/.test(tag);
+                                        const isMonthTag = ["January", "February", "March", "April", "May", "June",
+                                            "July", "August", "September", "October", "November", "December"].includes(tag);
+                                        const isBaseTag = BASE_TAGS.includes(tag);
+                                        const isUserTag = !isBaseTag && !isYearTag && !isMonthTag;
+                                        
+                                        // Debug logging
+                                        if (!isYearTag && !isMonthTag) {
+                                            console.log(`Tag: "${tag}", isBaseTag: ${isBaseTag}, isUserTag: ${isUserTag}, BASE_TAGS includes: ${BASE_TAGS.includes(tag)}`);
+                                        }
+                                        
+                                        let backgroundColor = "#e0e0e0"; // Default grey for base tags
+                                        let color = "inherit";
+                                        
+                                        if (isYearTag) {
+                                            backgroundColor = "#d4edda";
+                                            color = "#155724";
+                                        } else if (isMonthTag) {
+                                            backgroundColor = "#cce7ff";
+                                            color = "#0056b3";
+                                        } else if (isUserTag) {
+                                            backgroundColor = "#e6ccff";
+                                            color = "#6f42c1";
+                                        }
+                                        // Base tags keep default grey styling
+                                        
+                                        return (
+                                            <span
+                                                key={tag}
+                                                style={{
+                                                    fontSize: "0.75rem",
+                                                    padding: "2px 6px",
+                                                    backgroundColor,
+                                                    color,
+                                                    borderRadius: "4px",
+                                                    fontWeight: (isYearTag || isMonthTag) ? "bold" : "normal",
+                                                }}
+                                            >
+                                                {tag}
+                                            </span>
+                                        );
+                                    })}
                                 </div>
                             )}
                         </div>
@@ -423,38 +1020,124 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                             backgroundColor: "white",
                             padding: "20px",
                             borderRadius: "8px",
-                            minWidth: "300px",
-                            maxWidth: "400px",
+                            minWidth: "500px",
+                            maxWidth: "600px",
                         }}
                         onClick={(e) => e.stopPropagation()}
                     >
                         <h3 style={{ marginTop: 0 }}>Select Tags</h3>
-                        <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "300px", overflowY: "auto" }}>
-                            {availableTags.map((tag: string) => {
-                                const isSelected = photoTags.get(tagModal.photoKey)?.has(tag) || false;
-                                return (
-                                    <label
-                                        key={tag}
-                                        style={{
-                                            display: "flex",
-                                            alignItems: "center",
-                                            gap: "8px",
-                                            padding: "8px",
-                                            cursor: "pointer",
-                                            borderRadius: "4px",
-                                            backgroundColor: isSelected ? "#e3f2fd" : "transparent",
-                                        }}
-                                    >
-                                        <input
-                                            type="checkbox"
-                                            checked={isSelected}
-                                            onChange={() => toggleTag(tagModal.photoKey, tag)}
-                                            style={{ cursor: "pointer" }}
-                                        />
-                                        <span>{tag}</span>
-                                    </label>
-                                );
-                            })}
+                        
+                        <div style={{ display: "flex", gap: "16px", maxHeight: "400px", overflowY: "auto" }}>
+                            {/* People & Names Column */}
+                            <div style={{ flex: 1, minWidth: "150px" }}>
+                                <h4 style={{ margin: "0 0 8px 0", fontSize: "0.9rem", color: "#666", borderBottom: "1px solid #eee", paddingBottom: "4px" }}>
+                                    People & Names
+                                </h4>
+                                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                    {availableTags.map((tag: string) => {
+                                        const isSelected = photoTags.get(tagModal.photoKey)?.has(tag) || false;
+                                        return (
+                                            <label
+                                                key={tag}
+                                                style={{
+                                                    display: "flex",
+                                                    alignItems: "center",
+                                                    gap: "6px",
+                                                    padding: "4px 6px",
+                                                    cursor: "pointer",
+                                                    borderRadius: "4px",
+                                                    backgroundColor: isSelected ? "#f0e6ff" : "transparent",
+                                                    fontSize: "0.85rem",
+                                                }}
+                                            >
+                                                <input
+                                                    type="checkbox"
+                                                    checked={isSelected}
+                                                    onChange={() => toggleTag(tagModal.photoKey, tag)}
+                                                    style={{ cursor: "pointer" }}
+                                                />
+                                                <span style={{ color: isSelected ? "#6f42c1" : "inherit" }}>{tag}</span>
+                                            </label>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                            
+                            {/* Years Column */}
+                            <div style={{ flex: 1, minWidth: "120px" }}>
+                                <h4 style={{ margin: "0 0 8px 0", fontSize: "0.9rem", color: "#666", borderBottom: "1px solid #eee", paddingBottom: "4px" }}>
+                                    Years
+                                </h4>
+                                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                    {Array.from(yearTags).sort().map((year: string) => {
+                                        const isSelected = photoTags.get(tagModal.photoKey)?.has(year) || false;
+                                        return (
+                                            <label
+                                                key={year}
+                                                style={{
+                                                    display: "flex",
+                                                    alignItems: "center",
+                                                    gap: "6px",
+                                                    padding: "4px 6px",
+                                                    cursor: "pointer",
+                                                    borderRadius: "4px",
+                                                    backgroundColor: isSelected ? "#d4edda" : "transparent",
+                                                    fontSize: "0.85rem",
+                                                }}
+                                            >
+                                                <input
+                                                    type="checkbox"
+                                                    checked={isSelected}
+                                                    onChange={() => toggleTag(tagModal.photoKey, year)}
+                                                    style={{ cursor: "pointer" }}
+                                                />
+                                                <span style={{ fontWeight: "bold", color: isSelected ? "#155724" : "#28a745" }}>{year}</span>
+                                            </label>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                            
+                            {/* Months Column */}
+                            <div style={{ flex: 1, minWidth: "120px" }}>
+                                <h4 style={{ margin: "0 0 8px 0", fontSize: "0.9rem", color: "#666", borderBottom: "1px solid #eee", paddingBottom: "4px" }}>
+                                    Months
+                                </h4>
+                                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                    {Array.from(monthTags).sort((a, b) => {
+                                        const monthOrder = [
+                                            "January", "February", "March", "April", "May", "June",
+                                            "July", "August", "September", "October", "November", "December"
+                                        ];
+                                        return monthOrder.indexOf(a) - monthOrder.indexOf(b);
+                                    }).map((month: string) => {
+                                        const isSelected = photoTags.get(tagModal.photoKey)?.has(month) || false;
+                                        return (
+                                            <label
+                                                key={month}
+                                                style={{
+                                                    display: "flex",
+                                                    alignItems: "center",
+                                                    gap: "6px",
+                                                    padding: "4px 6px",
+                                                    cursor: "pointer",
+                                                    borderRadius: "4px",
+                                                    backgroundColor: isSelected ? "#cce7ff" : "transparent",
+                                                    fontSize: "0.85rem",
+                                                }}
+                                            >
+                                                <input
+                                                    type="checkbox"
+                                                    checked={isSelected}
+                                                    onChange={() => toggleTag(tagModal.photoKey, month)}
+                                                    style={{ cursor: "pointer" }}
+                                                />
+                                                <span style={{ fontWeight: "bold", color: isSelected ? "#0056b3" : "#007bff" }}>{month}</span>
+                                            </label>
+                                        );
+                                    })}
+                                </div>
+                            </div>
                         </div>
                         
                         {!showTagRequest ? (
