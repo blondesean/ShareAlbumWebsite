@@ -206,11 +206,39 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                     isFavorite: photo.isFavorite || false,
                 }));
                 
-                // Sort: favorites first, then by key
+                // Sort: by favorite count (desc), then by year (desc), then by month (chronological)
                 photosWithFavorites.sort((a: Photo, b: Photo) => {
-                    if (a.isFavorite && !b.isFavorite) return -1;
-                    if (!a.isFavorite && b.isFavorite) return 1;
-                    return 0;
+                    // 1. Sort by favorite count (higher counts first)
+                    const aFavCount = a.favoriteCount || 0;
+                    const bFavCount = b.favoriteCount || 0;
+                    if (aFavCount !== bFavCount) {
+                        return bFavCount - aFavCount;
+                    }
+                    
+                    // 2. Sort by year (newer years first)
+                    const aYear = extractYearFromPhotoName(a.key);
+                    const bYear = extractYearFromPhotoName(b.key);
+                    if (aYear && bYear && aYear !== bYear) {
+                        return parseInt(bYear) - parseInt(aYear);
+                    }
+                    if (aYear && !bYear) return -1;
+                    if (!aYear && bYear) return 1;
+                    
+                    // 3. Sort by month (chronological order within same year)
+                    const aMonth = extractMonthFromPhotoName(a.key);
+                    const bMonth = extractMonthFromPhotoName(b.key);
+                    if (aMonth && bMonth && aMonth !== bMonth) {
+                        const monthOrder = [
+                            "January", "February", "March", "April", "May", "June",
+                            "July", "August", "September", "October", "November", "December"
+                        ];
+                        return monthOrder.indexOf(aMonth) - monthOrder.indexOf(bMonth);
+                    }
+                    if (aMonth && !bMonth) return -1;
+                    if (!aMonth && bMonth) return 1;
+                    
+                    // 4. Finally sort by photo key as tiebreaker
+                    return a.key.localeCompare(b.key);
                 });
                 
                 setPhotos(photosWithFavorites);
@@ -533,9 +561,37 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                         }));
                         
                         photosWithFavorites.sort((a: Photo, b: Photo) => {
-                            if (a.isFavorite && !b.isFavorite) return -1;
-                            if (!a.isFavorite && b.isFavorite) return 1;
-                            return 0;
+                            // 1. Sort by favorite count (higher counts first)
+                            const aFavCount = a.favoriteCount || 0;
+                            const bFavCount = b.favoriteCount || 0;
+                            if (aFavCount !== bFavCount) {
+                                return bFavCount - aFavCount;
+                            }
+                            
+                            // 2. Sort by year (newer years first)
+                            const aYear = extractYearFromPhotoName(a.key);
+                            const bYear = extractYearFromPhotoName(b.key);
+                            if (aYear && bYear && aYear !== bYear) {
+                                return parseInt(bYear) - parseInt(aYear);
+                            }
+                            if (aYear && !bYear) return -1;
+                            if (!aYear && bYear) return 1;
+                            
+                            // 3. Sort by month (chronological order within same year)
+                            const aMonth = extractMonthFromPhotoName(a.key);
+                            const bMonth = extractMonthFromPhotoName(b.key);
+                            if (aMonth && bMonth && aMonth !== bMonth) {
+                                const monthOrder = [
+                                    "January", "February", "March", "April", "May", "June",
+                                    "July", "August", "September", "October", "November", "December"
+                                ];
+                                return monthOrder.indexOf(aMonth) - monthOrder.indexOf(bMonth);
+                            }
+                            if (aMonth && !bMonth) return -1;
+                            if (!aMonth && bMonth) return 1;
+                            
+                            // 4. Finally sort by photo key as tiebreaker
+                            return a.key.localeCompare(b.key);
                         });
                         
                         setPhotos(photosWithFavorites);
