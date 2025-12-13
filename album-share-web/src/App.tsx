@@ -36,7 +36,8 @@ const BASE_TAGS = import.meta.env.VITE_AVAILABLE_TAGS?.split(",") ||
         , "Braden", "Kara", "Kelsey", "Kaitlyn"
         , "Steve", "Sean E"
         , "Owen", "Margot"
-        , "Buddy", "Gigi", "Eddie", "Animals"];
+        , "Buddy", "Gigi", "Eddie", "Animals"
+        , "Uploaded"];
 
 function PhotoApp({ signOut }: { signOut?: () => void }) {
     const [photos, setPhotos] = useState<Photo[]>([]);
@@ -53,6 +54,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
         const custom = customTags ? JSON.parse(customTags) : [];
         return [...BASE_TAGS, ...custom];
     });
+
     // Always show all years from 1960 to 2025 in the dropdown
     const ALL_YEARS = Array.from({ length: 2025 - 1960 + 1 }, (_, i) => String(1960 + i));
     const yearTags = new Set(ALL_YEARS);
@@ -67,6 +69,9 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
     const [uploading, setUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState<string | null>(null);
     const [uploadQueue, setUploadQueue] = useState<{total: number, completed: number, failed: number}>({total: 0, completed: 0, failed: 0});
+    const [loading, setLoading] = useState(false);
+    const [hasMore, setHasMore] = useState(true);
+    const [nextToken, setNextToken] = useState<string | null>(null);
 
     // Helper function to extract year from photo name
     const extractYearFromPhotoName = (photoKey: string): string | null => {
@@ -153,109 +158,148 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
         });
     };
 
-    useEffect(() => {
-        async function fetchPhotos() {
-            try {
+    const fetchPhotos = async (loadMore = false) => {
+        if (loading || (!hasMore && loadMore)) return;
+        
+        setLoading(true);
+        try {
+            // Get Cognito ID token (required for API Gateway Cognito User Pool authorizer)
+            const session = await fetchAuthSession();
+            const idToken = session.tokens?.idToken?.toString();
 
-
-                // Get Cognito ID token (required for API Gateway Cognito User Pool authorizer)
-                const session = await fetchAuthSession();
-                const idToken = session.tokens?.idToken?.toString();
-
-
-
-                if (!idToken) {
-                    throw new Error("No ID token available - please sign out and sign back in");
-                }
-
-                const response = await fetch(import.meta.env.VITE_API_URL, {
-                    headers: {
-                        Authorization: `Bearer ${idToken}`,
-                    },
-                });
-
-                if (!response.ok) {
-                    const text = await response.text();
-                    throw new Error(`Failed to fetch photos: ${response.status} ${text}`);
-                }
-                  
-                const data = await response.json();
-                
-
-                
-                const filteredPhotos = filterDuplicatePhotos(data);
-                
-                // Extract years and months from photo names and collect unique values
-                const detectedYears = new Set<string>();
-                const detectedMonths = new Set<string>();
-                filteredPhotos.forEach((photo: Photo) => {
-                    const year = extractYearFromPhotoName(photo.key);
-                    if (year) {
-                        detectedYears.add(year);
-                    }
-                    const month = extractMonthFromPhotoName(photo.key);
-                    if (month) {
-                        detectedMonths.add(month);
-                    }
-                });
-                // yearTags and monthTags always contain all years/months, so we don't need to update them
-                
-                // Mark favorites and sort (favorites first)
-                const photosWithFavorites = filteredPhotos.map((photo: Photo) => ({
-                    ...photo,
-                    isFavorite: photo.isFavorite || false,
-                }));
-                
-                // Sort: by favorite count (desc), then by year (desc), then by month (chronological)
-                photosWithFavorites.sort((a: Photo, b: Photo) => {
-                    // 1. Sort by favorite count (higher counts first)
-                    const aFavCount = a.favoriteCount || 0;
-                    const bFavCount = b.favoriteCount || 0;
-                    if (aFavCount !== bFavCount) {
-                        return bFavCount - aFavCount;
-                    }
-                    
-                    // 2. Sort by year (newer years first)
-                    const aYear = extractYearFromPhotoName(a.key);
-                    const bYear = extractYearFromPhotoName(b.key);
-                    if (aYear && bYear && aYear !== bYear) {
-                        return parseInt(bYear) - parseInt(aYear);
-                    }
-                    if (aYear && !bYear) return -1;
-                    if (!aYear && bYear) return 1;
-                    
-                    // 3. Sort by month (chronological order within same year)
-                    const aMonth = extractMonthFromPhotoName(a.key);
-                    const bMonth = extractMonthFromPhotoName(b.key);
-                    if (aMonth && bMonth && aMonth !== bMonth) {
-                        const monthOrder = [
-                            "January", "February", "March", "April", "May", "June",
-                            "July", "August", "September", "October", "November", "December"
-                        ];
-                        return monthOrder.indexOf(aMonth) - monthOrder.indexOf(bMonth);
-                    }
-                    if (aMonth && !bMonth) return -1;
-                    if (!aMonth && bMonth) return 1;
-                    
-                    // 4. Finally sort by photo key as tiebreaker
-                    return a.key.localeCompare(b.key);
-                });
-                
-                setPhotos(photosWithFavorites);
-                
-                // Build favorites set
-                const favSet = new Set<string>(photosWithFavorites.filter((p: Photo) => p.isFavorite).map((p: Photo) => p.key));
-                setFavorites(favSet);
-
-                // Fetch tags for all photos
-                await fetchAllTags(idToken, photosWithFavorites);
-            } catch (err: any) {
-                console.error(err);
-                setError(err.message);
+            if (!idToken) {
+                throw new Error("No ID token available - please sign out and sign back in");
             }
+
+            // Build URL with pagination parameters
+            let url = import.meta.env.VITE_API_URL;
+            const params = new URLSearchParams();
+            params.append('limit', '50'); // Load 50 photos at a time
+            if (loadMore && nextToken) {
+                params.append('nextToken', nextToken);
+            }
+            url += '?' + params.toString();
+
+            const response = await fetch(url, {
+                headers: {
+                    Authorization: `Bearer ${idToken}`,
+                },
+            });
+
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(`Failed to fetch photos: ${response.status} ${text}`);
+            }
+              
+            const data = await response.json();
+            
+            // Handle new paginated response format
+            const newPhotos = data.photos || data; // Support both paginated and legacy responses
+            const pagination = data.pagination;
+            
+            if (pagination) {
+                setNextToken(pagination.nextToken);
+                setHasMore(pagination.hasMore);
+            } else {
+                // Legacy response - assume no more pages
+                setHasMore(false);
+            }
+            
+            const filteredPhotos = filterDuplicatePhotos(newPhotos);
+            
+            // Mark favorites and sort
+            const photosWithFavorites = filteredPhotos.map((photo: Photo) => ({
+                ...photo,
+                isFavorite: photo.isFavorite || false,
+            }));
+
+            // Sort: by favorite count (desc), then by year (desc), then by month (chronological)
+            photosWithFavorites.sort((a: Photo, b: Photo) => {
+                // 1. Sort by favorite count (higher counts first)
+                const aFavCount = a.favoriteCount || 0;
+                const bFavCount = b.favoriteCount || 0;
+                if (aFavCount !== bFavCount) {
+                    return bFavCount - aFavCount;
+                }
+                
+                // 2. Sort by year (newer years first)
+                const aYear = extractYearFromPhotoName(a.key);
+                const bYear = extractYearFromPhotoName(b.key);
+                if (aYear && bYear && aYear !== bYear) {
+                    return parseInt(bYear) - parseInt(aYear);
+                }
+                if (aYear && !bYear) return -1;
+                if (!aYear && bYear) return 1;
+                
+                // 3. Sort by month (chronological order within same year)
+                const aMonth = extractMonthFromPhotoName(a.key);
+                const bMonth = extractMonthFromPhotoName(b.key);
+                if (aMonth && bMonth && aMonth !== bMonth) {
+                    const monthOrder = [
+                        "January", "February", "March", "April", "May", "June",
+                        "July", "August", "September", "October", "November", "December"
+                    ];
+                    return monthOrder.indexOf(aMonth) - monthOrder.indexOf(bMonth);
+                }
+                if (aMonth && !bMonth) return -1;
+                if (!aMonth && bMonth) return 1;
+                
+                // 4. Finally sort by photo key as tiebreaker
+                return a.key.localeCompare(b.key);
+            });
+            
+            if (loadMore) {
+                // Append to existing photos
+                setPhotos(prev => [...prev, ...photosWithFavorites]);
+            } else {
+                // Replace photos (initial load)
+                setPhotos(photosWithFavorites);
+            }
+            
+            // Build favorites set
+            const favSet = new Set<string>(photosWithFavorites.filter((p: Photo) => p.isFavorite).map((p: Photo) => p.key));
+            if (loadMore) {
+                setFavorites(prev => new Set([...prev, ...favSet]));
+            } else {
+                setFavorites(favSet);
+            }
+
+            // Fetch tags for new photos
+            await fetchAllTags(idToken, photosWithFavorites);
+        } catch (err: any) {
+            console.error(err);
+            setError(err.message);
+        } finally {
+            setLoading(false);
         }
+    };
+
+    useEffect(() => {
         fetchPhotos();
     }, []);
+
+    // Infinite scroll effect
+    useEffect(() => {
+        const handleScroll = () => {
+            // Check if user is near bottom of page (within 1000px)
+            const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+            const windowHeight = window.innerHeight;
+            const documentHeight = document.documentElement.scrollHeight;
+            
+            if (scrollTop + windowHeight >= documentHeight - 1000) {
+                // User is near bottom, load more photos
+                if (hasMore && !loading) {
+                    fetchPhotos(true);
+                }
+            }
+        };
+
+        // Add scroll listener
+        window.addEventListener('scroll', handleScroll);
+        
+        // Cleanup
+        return () => window.removeEventListener('scroll', handleScroll);
+    }, [hasMore, loading]); // Re-run when hasMore or loading changes
 
     const fetchAllTags = async (idToken: string, photosList: Photo[]) => {
         const tagsMap = new Map<string, Set<string>>();
@@ -433,6 +477,37 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
         setShowTagRequest(false);
     };
 
+    const downloadPhoto = async (photoKey: string, photoUrl: string) => {
+        try {
+            // Fetch the image
+            const response = await fetch(photoUrl);
+            if (!response.ok) throw new Error('Failed to fetch image');
+            
+            // Get the image blob
+            const blob = await response.blob();
+            
+            // Create download link
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            
+            // Extract filename from photo key (remove path if present)
+            const filename = photoKey.split('/').pop() || photoKey;
+            link.download = filename;
+            
+            // Trigger download
+            document.body.appendChild(link);
+            link.click();
+            
+            // Cleanup
+            document.body.removeChild(link);
+            window.URL.revokeObjectURL(url);
+        } catch (error) {
+            console.error('Download failed:', error);
+            alert('Failed to download photo. Please try again.');
+        }
+    };
+
 
 
     const uploadMultiplePhotos = async (files: File[]) => {
@@ -498,6 +573,28 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 if (!uploadResponse.ok) {
                     const errorText = await uploadResponse.text();
                     throw new Error(`Failed to upload to S3: ${uploadResponse.status} - ${errorText}`);
+                }
+
+                // Step 3: Add "Uploaded" tag to the photo
+                try {
+                    const tagApiUrl = import.meta.env.VITE_API_URL.replace("/photos", "/tags");
+                    const tagResponse = await fetch(tagApiUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${idToken}`,
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ 
+                            photoKey: key, 
+                            tag: 'Uploaded' 
+                        }),
+                    });
+
+                    if (!tagResponse.ok) {
+                        console.warn(`Failed to add Uploaded tag to ${key}`);
+                    }
+                } catch (tagError) {
+                    console.warn(`Failed to tag uploaded photo ${key}:`, tagError);
                 }
 
                 results.successful++;
@@ -621,14 +718,36 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
         }
     };
 
-    const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const checkForDuplicateNames = (files: File[]): { duplicates: string[], validFiles: File[] } => {
+        const existingNames = new Set(photos.map(photo => {
+            // Extract just the filename from the photo key
+            const filename = photo.key.split('/').pop() || photo.key;
+            // Remove timestamp and user ID prefix if present (e.g., "1765511834546_28018300_filename.jpg" -> "filename.jpg")
+            return filename.replace(/^\d+_\d+_/, '');
+        }));
+        
+        const duplicates: string[] = [];
+        const validFiles: File[] = [];
+        
+        files.forEach(file => {
+            if (existingNames.has(file.name)) {
+                duplicates.push(file.name);
+            } else {
+                validFiles.push(file);
+            }
+        });
+        
+        return { duplicates, validFiles };
+    };
+
+    const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
         const files = event.target.files;
         if (files && files.length > 0) {
             const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
             const validFiles: File[] = [];
             const invalidFiles: string[] = [];
             
-            // Validate all selected files
+            // Validate file types
             Array.from(files).forEach(file => {
                 if (allowedTypes.includes(file.type)) {
                     validFiles.push(file);
@@ -642,8 +761,32 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 return;
             }
             
-            if (validFiles.length > 0) {
-                // Clear any previous errors
+            // Check for duplicate names
+            const { duplicates, validFiles: nonDuplicateFiles } = checkForDuplicateNames(validFiles);
+            
+            if (duplicates.length > 0) {
+                const proceed = confirm(
+                    `The following files have names that already exist:\n\n${duplicates.join('\n')}\n\n` +
+                    `Please rename these files and try again, or click OK to upload only the files without conflicts (${nonDuplicateFiles.length} files).`
+                );
+                
+                if (!proceed) {
+                    // Reset the input
+                    event.target.value = '';
+                    return;
+                }
+                
+                if (nonDuplicateFiles.length === 0) {
+                    setError('All selected files have duplicate names. Please rename them and try again.');
+                    event.target.value = '';
+                    return;
+                }
+                
+                // Upload only non-duplicate files
+                setError(null);
+                uploadMultiplePhotos(nonDuplicateFiles);
+            } else if (validFiles.length > 0) {
+                // No duplicates, upload all files
                 setError(null);
                 uploadMultiplePhotos(validFiles);
             }
@@ -651,6 +794,14 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
         
         // Reset the input so the same files can be selected again
         event.target.value = '';
+    };
+
+    // Count how many photos have each tag
+    const getTagCount = (tag: string) => {
+        return photos.filter(photo => {
+            const tags = photoTags.get(photo.key) || new Set<string>();
+            return tags.has(tag);
+        }).length;
     };
 
     const filteredPhotos = photos.filter((photo) => {
@@ -726,22 +877,76 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             </div>
 
             {/* Upload Progress */}
-            {uploadProgress && (
+            {uploading && (
                 <div style={{ 
                     marginBottom: "1rem", 
-                    padding: "8px 12px", 
-                    backgroundColor: "#d1ecf1", 
-                    color: "#0c5460", 
-                    borderRadius: "4px",
-                    fontSize: "0.9rem"
+                    padding: "16px", 
+                    backgroundColor: "#f8f9fa", 
+                    borderRadius: "8px",
+                    border: "1px solid #e9ecef"
                 }}>
-                    {uploadProgress}
-                    {uploadQueue.total > 1 && (
-                        <div style={{ fontSize: "0.8rem", marginTop: "4px" }}>
-                            Progress: {uploadQueue.completed + uploadQueue.failed} / {uploadQueue.total} 
-                            {uploadQueue.failed > 0 && ` (${uploadQueue.failed} failed)`}
-                        </div>
-                    )}
+                    <div style={{ 
+                        display: "flex", 
+                        justifyContent: "space-between", 
+                        alignItems: "center", 
+                        marginBottom: "8px" 
+                    }}>
+                        <span style={{ 
+                            fontSize: "0.9rem", 
+                            fontWeight: "600", 
+                            color: "#495057" 
+                        }}>
+                            {uploadProgress || "Uploading photos..."}
+                        </span>
+                        <span style={{ 
+                            fontSize: "0.8rem", 
+                            color: "#6c757d" 
+                        }}>
+                            {uploadQueue.completed + uploadQueue.failed} / {uploadQueue.total}
+                        </span>
+                    </div>
+                    
+                    {/* Progress Bar */}
+                    <div style={{
+                        width: "100%",
+                        height: "8px",
+                        backgroundColor: "#e9ecef",
+                        borderRadius: "4px",
+                        overflow: "hidden",
+                        marginBottom: "8px"
+                    }}>
+                        <div style={{
+                            height: "100%",
+                            backgroundColor: uploadQueue.failed > 0 ? "#ffc107" : "#28a745",
+                            borderRadius: "4px",
+                            width: `${uploadQueue.total > 0 ? ((uploadQueue.completed + uploadQueue.failed) / uploadQueue.total) * 100 : 0}%`,
+                            transition: "width 0.3s ease-in-out"
+                        }} />
+                    </div>
+                    
+                    {/* Status Details */}
+                    <div style={{ 
+                        display: "flex", 
+                        gap: "16px", 
+                        fontSize: "0.75rem", 
+                        color: "#6c757d" 
+                    }}>
+                        {uploadQueue.completed > 0 && (
+                            <span style={{ color: "#28a745" }}>
+                                ✓ {uploadQueue.completed} completed
+                            </span>
+                        )}
+                        {uploadQueue.failed > 0 && (
+                            <span style={{ color: "#dc3545" }}>
+                                ✗ {uploadQueue.failed} failed
+                            </span>
+                        )}
+                        {uploadQueue.total - uploadQueue.completed - uploadQueue.failed > 0 && (
+                            <span style={{ color: "#007bff" }}>
+                                ⏳ {uploadQueue.total - uploadQueue.completed - uploadQueue.failed} pending
+                            </span>
+                        )}
+                    </div>
                 </div>
             )}
 
@@ -842,7 +1047,9 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                             }}
                                             style={{ cursor: "pointer" }}
                                         />
-                                        <span style={{ fontWeight: "bold", color: "#155724" }}>{year}</span>
+                                        <span style={{ fontWeight: "bold", color: "#155724" }}>
+                                            {year} ({getTagCount(year)})
+                                        </span>
                                     </label>
                                 ))}
                             </div>
@@ -927,7 +1134,9 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                             }}
                                             style={{ cursor: "pointer" }}
                                         />
-                                        <span style={{ fontWeight: "bold", color: "#0056b3" }}>{month}</span>
+                                        <span style={{ fontWeight: "bold", color: "#0056b3" }}>
+                                            {month} ({getTagCount(month)})
+                                        </span>
                                     </label>
                                 ))}
                             </div>
@@ -937,25 +1146,28 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 
                 {/* Regular Tags Section */}
                 <span style={{ fontWeight: "bold", color: "#666" }}>People & Tags:</span>
-                {availableTags.map((tag: string) => (
-                    <button
-                        key={tag}
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedFilter(selectedFilter === tag ? null : tag);
-                        }}
-                        style={{
-                            padding: "6px 12px",
-                            border: "1px solid #ccc",
-                            borderRadius: "4px",
-                            background: selectedFilter === tag ? "#007bff" : "white",
-                            color: selectedFilter === tag ? "white" : "black",
-                            cursor: "pointer",
-                        }}
-                    >
-                        {tag}
-                    </button>
-                ))}
+                {availableTags.map((tag: string) => {
+                    const count = getTagCount(tag);
+                    return (
+                        <button
+                            key={tag}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedFilter(selectedFilter === tag ? null : tag);
+                            }}
+                            style={{
+                                padding: "6px 12px",
+                                border: "1px solid #ccc",
+                                borderRadius: "4px",
+                                background: selectedFilter === tag ? "#007bff" : "white",
+                                color: selectedFilter === tag ? "white" : "black",
+                                cursor: "pointer",
+                            }}
+                        >
+                            {tag} ({count})
+                        </button>
+                    );
+                })}
             </div>
 
             {error && <p style={{ color: "red" }}>Error: {error}</p>}
@@ -1069,6 +1281,20 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 })}
             </div>
 
+            {/* Loading indicator for infinite scroll */}
+            {loading && (
+                <div style={{ textAlign: "center", margin: "20px 0" }}>
+                    <p>Loading more photos...</p>
+                </div>
+            )}
+
+            {/* End of photos indicator */}
+            {!hasMore && photos.length > 0 && (
+                <div style={{ textAlign: "center", margin: "20px 0", color: "#666" }}>
+                    <p>You've reached the end of your photos!</p>
+                </div>
+            )}
+
             {contextMenu && (
                 <div
                     style={{
@@ -1121,6 +1347,28 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                         onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
                     >
                         Tag Photo
+                    </button>
+                    <button
+                        onClick={() => {
+                            const photo = photos.find(p => p.key === contextMenu.photoKey);
+                            if (photo) {
+                                downloadPhoto(contextMenu.photoKey, photo.url);
+                            }
+                            setContextMenu(null);
+                        }}
+                        style={{
+                            display: "block",
+                            width: "100%",
+                            padding: "8px 16px",
+                            border: "none",
+                            background: "none",
+                            textAlign: "left",
+                            cursor: "pointer",
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f0f0f0")}
+                        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                    >
+                        Download Photo
                     </button>
                 </div>
             )}
