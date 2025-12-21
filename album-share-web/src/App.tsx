@@ -1390,7 +1390,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                         height: "auto",
                                     }}
                                     loading="lazy"
-                                    onError={(e) => {
+                                    onError={() => {
                                         console.error("Image load error:", photo.key);
                                     }}
                                 />
