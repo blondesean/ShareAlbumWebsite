@@ -72,6 +72,17 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
     const [bulkTagMode, setBulkTagMode] = useState(false);
     const [selectedBulkTag, setSelectedBulkTag] = useState<string | null>(null);
     const [showBulkTagDropdown, setShowBulkTagDropdown] = useState(false);
+    const [isMobile, setIsMobile] = useState(false);
+
+    // Detect mobile device
+    useEffect(() => {
+        const checkMobile = () => {
+            setIsMobile(window.matchMedia('(hover: none) and (pointer: coarse)').matches);
+        };
+        checkMobile();
+        window.addEventListener('resize', checkMobile);
+        return () => window.removeEventListener('resize', checkMobile);
+    }, []);
     const [loading, setLoading] = useState(false);
     const [hasMore, setHasMore] = useState(true);
     const [nextToken, setNextToken] = useState<string | null>(null);
@@ -1321,43 +1332,6 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                     setContextMenu({ x: e.clientX, y: e.clientY, photoKey: photo.key });
                                 }
                             }}
-                            onTouchStart={(e) => {
-                                if (!bulkTagMode) {
-                                    // Start long press timer for mobile context menu
-                                    const touch = e.touches[0];
-                                    const longPressTimer = setTimeout(() => {
-                                        e.preventDefault();
-                                        setContextMenu({ 
-                                            x: touch.clientX, 
-                                            y: touch.clientY, 
-                                            photoKey: photo.key 
-                                        });
-                                    }, 500); // 500ms long press
-                                    
-                                    // Store timer to clear it if touch ends early
-                                    (e.currentTarget as any).longPressTimer = longPressTimer;
-                                }
-                            }}
-                            onTouchEnd={(e) => {
-                                if (!bulkTagMode) {
-                                    // Clear long press timer if touch ends early
-                                    const timer = (e.currentTarget as any).longPressTimer;
-                                    if (timer) {
-                                        clearTimeout(timer);
-                                        (e.currentTarget as any).longPressTimer = null;
-                                    }
-                                }
-                            }}
-                            onTouchMove={(e) => {
-                                if (!bulkTagMode) {
-                                    // Cancel long press if finger moves (scrolling)
-                                    const timer = (e.currentTarget as any).longPressTimer;
-                                    if (timer) {
-                                        clearTimeout(timer);
-                                        (e.currentTarget as any).longPressTimer = null;
-                                    }
-                                }
-                            }}
                             onClick={async (e) => {
                                 if (bulkTagMode && selectedBulkTag) {
                                     e.preventDefault();
@@ -1371,11 +1345,13 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                 border: bulkTagMode && selectedBulkTag ? "2px dashed #6f42c1" : "none",
                                 borderRadius: "8px",
                                 padding: bulkTagMode && selectedBulkTag ? "2px" : "0",
-                                // Improve mobile touch targets
-                                minHeight: "40px",
-                                WebkitTouchCallout: bulkTagMode ? "none" : "default", // Disable iOS callout in bulk mode
-                                WebkitUserSelect: "none", // Prevent text selection on mobile
-                                userSelect: "none"
+                                // Prevent iOS image saving and context menu
+                                WebkitTouchCallout: "none",
+                                WebkitUserSelect: "none",
+                                userSelect: "none",
+                                // Prevent image drag on all platforms
+                                WebkitUserDrag: "none",
+                                userDrag: "none"
                             }}
                         >
                             <div style={{ position: "relative" }}>
@@ -1394,6 +1370,43 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                         console.error("Image load error:", photo.key);
                                     }}
                                 />
+                                
+                                {/* Mobile Menu Button - Only visible on touch devices */}
+                                {isMobile && (
+                                    <button
+                                        onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            setContextMenu({ x: e.clientX, y: e.clientY, photoKey: photo.key });
+                                        }}
+                                        style={{
+                                            position: "absolute",
+                                            top: "8px",
+                                            right: "8px",
+                                            width: "32px",
+                                            height: "32px",
+                                            borderRadius: "50%",
+                                            backgroundColor: "rgba(0, 0, 0, 0.7)",
+                                            color: "white",
+                                            border: "none",
+                                            cursor: "pointer",
+                                            fontSize: "16px",
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: "center",
+                                            zIndex: 10,
+                                            fontWeight: "bold"
+                                        }}
+                                        onTouchStart={(e) => {
+                                            e.currentTarget.style.backgroundColor = "rgba(0, 0, 0, 0.9)";
+                                        }}
+                                        onTouchEnd={(e) => {
+                                            e.currentTarget.style.backgroundColor = "rgba(0, 0, 0, 0.7)";
+                                        }}
+                                    >
+                                        ⋮
+                                    </button>
+                                )}
                                 {/* Favorite Count - bottom right corner of photo */}
                                 {photo.favoriteCount !== undefined && photo.favoriteCount > 0 && (
                                     <div
