@@ -69,6 +69,9 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
     const [uploading, setUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState<string | null>(null);
     const [uploadQueue, setUploadQueue] = useState<{total: number, completed: number, failed: number}>({total: 0, completed: 0, failed: 0});
+    const [bulkTagMode, setBulkTagMode] = useState(false);
+    const [selectedBulkTag, setSelectedBulkTag] = useState<string | null>(null);
+    const [showBulkTagDropdown, setShowBulkTagDropdown] = useState(false);
     const [loading, setLoading] = useState(false);
     const [hasMore, setHasMore] = useState(true);
     const [nextToken, setNextToken] = useState<string | null>(null);
@@ -834,6 +837,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 setContextMenu(null);
                 setShowYearDropdown(false);
                 setShowMonthDropdown(false);
+                setShowBulkTagDropdown(false);
             }}
         >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
@@ -868,6 +872,94 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                         </label>
                     </div>
                     
+                    {/* Bulk Tag Mode Button */}
+                    <div style={{ position: "relative" }}>
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                if (bulkTagMode) {
+                                    // Exit bulk tag mode
+                                    setBulkTagMode(false);
+                                    setSelectedBulkTag(null);
+                                    setShowBulkTagDropdown(false);
+                                } else {
+                                    // Enter bulk tag mode
+                                    setBulkTagMode(true);
+                                    setShowBulkTagDropdown(true);
+                                }
+                            }}
+                            style={{
+                                padding: "8px 16px",
+                                backgroundColor: bulkTagMode ? "#dc3545" : "#6f42c1",
+                                color: "white",
+                                border: "none",
+                                borderRadius: "4px",
+                                cursor: "pointer",
+                                fontSize: "0.9rem",
+                                fontWeight: "bold",
+                                display: "inline-block",
+                                marginRight: "12px",
+                            }}
+                        >
+                            {bulkTagMode ? "Exit Tag Mode" : "🏷️ Tag Multiple Photos"}
+                        </button>
+                        
+                        {/* Bulk Tag Selection Dropdown */}
+                        {showBulkTagDropdown && (
+                            <div
+                                style={{
+                                    position: "absolute",
+                                    top: "100%",
+                                    left: 0,
+                                    backgroundColor: "white",
+                                    border: "2px solid #6f42c1",
+                                    borderRadius: "4px",
+                                    boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
+                                    zIndex: 9999,
+                                    minWidth: "250px",
+                                    maxHeight: "300px",
+                                    overflowY: "auto",
+                                    marginTop: "4px",
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                            >
+                                <div style={{ padding: "8px 12px", fontSize: "0.8rem", color: "#666", borderBottom: "1px solid #eee", backgroundColor: "#f8f9fa" }}>
+                                    Select a tag to apply ({availableTags.length} tags):
+                                </div>
+                                {availableTags.map((tag: string) => (
+                                    <button
+                                        key={tag}
+                                        onClick={() => {
+                                            setSelectedBulkTag(tag);
+                                            setShowBulkTagDropdown(false);
+                                        }}
+                                        style={{
+                                            display: "block",
+                                            width: "100%",
+                                            padding: "8px 12px",
+                                            border: "none",
+                                            background: selectedBulkTag === tag ? "#f0e6ff" : "transparent",
+                                            textAlign: "left",
+                                            cursor: "pointer",
+                                            fontSize: "0.9rem",
+                                        }}
+                                        onMouseEnter={(e) => {
+                                            if (selectedBulkTag !== tag) {
+                                                e.currentTarget.style.backgroundColor = "#f8f9fa";
+                                            }
+                                        }}
+                                        onMouseLeave={(e) => {
+                                            if (selectedBulkTag !== tag) {
+                                                e.currentTarget.style.backgroundColor = "transparent";
+                                            }
+                                        }}
+                                    >
+                                        {tag}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+                    </div>
 
 
 
@@ -875,6 +967,45 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                     <button onClick={signOut}>Sign Out</button>
                 </div>
             </div>
+
+            {/* Bulk Tag Mode Status */}
+            {bulkTagMode && selectedBulkTag && (
+                <div style={{
+                    marginBottom: "1rem",
+                    padding: "12px 16px",
+                    backgroundColor: "#f0e6ff",
+                    border: "2px solid #6f42c1",
+                    borderRadius: "8px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between"
+                }}>
+                    <div>
+                        <strong style={{ color: "#6f42c1" }}>🏷️ Bulk Tag Mode Active</strong>
+                        <div style={{ fontSize: "0.9rem", color: "#666", marginTop: "4px" }}>
+                            Click any photo to add the tag: <strong style={{ color: "#6f42c1" }}>{selectedBulkTag}</strong>
+                        </div>
+                    </div>
+                    <button
+                        onClick={() => {
+                            setBulkTagMode(false);
+                            setSelectedBulkTag(null);
+                            setShowBulkTagDropdown(false);
+                        }}
+                        style={{
+                            padding: "6px 12px",
+                            backgroundColor: "#dc3545",
+                            color: "white",
+                            border: "none",
+                            borderRadius: "4px",
+                            cursor: "pointer",
+                            fontSize: "0.8rem"
+                        }}
+                    >
+                        Exit
+                    </button>
+                </div>
+            )}
 
             {/* Upload Progress */}
             {uploading && (
@@ -1185,10 +1316,67 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                         <div
                             key={photo.key}
                             onContextMenu={(e) => {
-                                e.preventDefault();
-                                setContextMenu({ x: e.clientX, y: e.clientY, photoKey: photo.key });
+                                if (!bulkTagMode) {
+                                    e.preventDefault();
+                                    setContextMenu({ x: e.clientX, y: e.clientY, photoKey: photo.key });
+                                }
                             }}
-                            style={{ cursor: "pointer", position: "relative" }}
+                            onTouchStart={(e) => {
+                                if (!bulkTagMode) {
+                                    // Start long press timer for mobile context menu
+                                    const touch = e.touches[0];
+                                    const longPressTimer = setTimeout(() => {
+                                        e.preventDefault();
+                                        setContextMenu({ 
+                                            x: touch.clientX, 
+                                            y: touch.clientY, 
+                                            photoKey: photo.key 
+                                        });
+                                    }, 500); // 500ms long press
+                                    
+                                    // Store timer to clear it if touch ends early
+                                    (e.currentTarget as any).longPressTimer = longPressTimer;
+                                }
+                            }}
+                            onTouchEnd={(e) => {
+                                if (!bulkTagMode) {
+                                    // Clear long press timer if touch ends early
+                                    const timer = (e.currentTarget as any).longPressTimer;
+                                    if (timer) {
+                                        clearTimeout(timer);
+                                        (e.currentTarget as any).longPressTimer = null;
+                                    }
+                                }
+                            }}
+                            onTouchMove={(e) => {
+                                if (!bulkTagMode) {
+                                    // Cancel long press if finger moves (scrolling)
+                                    const timer = (e.currentTarget as any).longPressTimer;
+                                    if (timer) {
+                                        clearTimeout(timer);
+                                        (e.currentTarget as any).longPressTimer = null;
+                                    }
+                                }
+                            }}
+                            onClick={async (e) => {
+                                if (bulkTagMode && selectedBulkTag) {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    await toggleTag(photo.key, selectedBulkTag);
+                                }
+                            }}
+                            style={{ 
+                                cursor: bulkTagMode && selectedBulkTag ? "crosshair" : "pointer", 
+                                position: "relative",
+                                border: bulkTagMode && selectedBulkTag ? "2px dashed #6f42c1" : "none",
+                                borderRadius: "8px",
+                                padding: bulkTagMode && selectedBulkTag ? "2px" : "0",
+                                // Improve mobile touch targets
+                                minHeight: "40px",
+                                WebkitTouchCallout: bulkTagMode ? "none" : "default", // Disable iOS callout in bulk mode
+                                WebkitUserSelect: "none", // Prevent text selection on mobile
+                                userSelect: "none"
+                            }}
                         >
                             <div style={{ position: "relative" }}>
                                 <img
@@ -1198,9 +1386,13 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                         width: "100%",
                                         borderRadius: "8px",
                                         border: favorites.has(photo.key) ? "4px solid gold" : "none",
+                                        maxWidth: "100%",
+                                        height: "auto",
                                     }}
-
-
+                                    loading="lazy"
+                                    onError={(e) => {
+                                        console.error("Image load error:", photo.key);
+                                    }}
                                 />
                                 {/* Favorite Count - bottom right corner of photo */}
                                 {photo.favoriteCount !== undefined && photo.favoriteCount > 0 && (
