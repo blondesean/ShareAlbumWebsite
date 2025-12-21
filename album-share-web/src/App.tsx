@@ -1348,16 +1348,8 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                 // Prevent iOS image saving and context menu
                                 WebkitTouchCallout: "none",
                                 WebkitUserSelect: "none",
-<<<<<<< HEAD
                                 userSelect: "none"
                             } as React.CSSProperties}
-=======
-                                userSelect: "none",
-                                // Prevent image drag on all platforms
-                                WebkitUserDrag: "none",
-                                userDrag: "none"
-                            }}
->>>>>>> origin
                         >
                             <div style={{ position: "relative" }}>
                                 <img
