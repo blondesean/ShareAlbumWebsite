@@ -77,7 +77,14 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
     // Detect mobile device
     useEffect(() => {
         const checkMobile = () => {
-            setIsMobile(window.matchMedia('(hover: none) and (pointer: coarse)').matches);
+            const isMobileDevice = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+            console.log("Mobile detection:", {
+                isMobileDevice,
+                userAgent: navigator.userAgent,
+                screenWidth: window.screen.width,
+                windowWidth: window.innerWidth
+            });
+            setIsMobile(isMobileDevice);
         };
         checkMobile();
         window.addEventListener('resize', checkMobile);
@@ -187,12 +194,24 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
 
             // Build URL with pagination parameters
             let url = import.meta.env.VITE_API_URL;
-            const params = new URLSearchParams();
-            params.append('limit', '50'); // Load 50 photos at a time
             if (loadMore && nextToken) {
+                const params = new URLSearchParams();
+                params.append('limit', '50');
                 params.append('nextToken', nextToken);
+                url += '?' + params.toString();
+            } else if (!loadMore) {
+                // First load - get default amount without pagination
+                const params = new URLSearchParams();
+                params.append('limit', '50');
+                url += '?' + params.toString();
             }
-            url += '?' + params.toString();
+
+            console.log("Request details:", {
+                url,
+                loadMore,
+                nextToken,
+                userAgent: navigator.userAgent.substring(0, 100)
+            });
 
             const response = await fetch(url, {
                 headers: {
@@ -204,12 +223,26 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 const text = await response.text();
                 throw new Error(`Failed to fetch photos: ${response.status} ${text}`);
             }
+
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(`Failed to fetch photos: ${response.status} ${text}`);
+            }
               
             const data = await response.json();
+            console.log("API response structure:", {
+                hasPhotos: !!data.photos,
+                photosLength: data.photos?.length || 0,
+                hasPagination: !!data.pagination,
+                dataKeys: Object.keys(data),
+                userAgent: navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop'
+            });
             
-            // Handle new paginated response format
-            const newPhotos = data.photos || data; // Support both paginated and legacy responses
+            // Handle paginated response format
+            const photos = data.photos || data; // Support both paginated and legacy responses
             const pagination = data.pagination;
+            
+            console.log("Photos received:", photos.length, "Has more:", pagination?.hasMore);
             
             if (pagination) {
                 setNextToken(pagination.nextToken);
@@ -219,7 +252,8 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 setHasMore(false);
             }
             
-            const filteredPhotos = filterDuplicatePhotos(newPhotos);
+            const filteredPhotos = filterDuplicatePhotos(photos);
+            console.log("After filtering duplicates:", filteredPhotos.length, "from", photos.length);
             
             // Mark favorites and sort
             const photosWithFavorites = filteredPhotos.map((photo: Photo) => ({
@@ -264,9 +298,14 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             
             if (loadMore) {
                 // Append to existing photos
-                setPhotos(prev => [...prev, ...photosWithFavorites]);
+                setPhotos(prev => {
+                    const newPhotos = [...prev, ...photosWithFavorites];
+                    console.log("Appending photos - prev:", prev.length, "new:", photosWithFavorites.length, "total:", newPhotos.length);
+                    return newPhotos;
+                });
             } else {
                 // Replace photos (initial load)
+                console.log("Setting initial photos:", photosWithFavorites.length);
                 setPhotos(photosWithFavorites);
             }
             
@@ -839,6 +878,17 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
         }
         
         return true;
+    });
+
+    // Debug logging for render
+    console.log("Render state:", {
+        totalPhotos: photos.length,
+        filteredPhotos: filteredPhotos.length,
+        hasError: !!error,
+        loading,
+        selectedFilter,
+        selectedYears: selectedYears.size,
+        selectedMonths: selectedMonths.size
     });
 
     return (
