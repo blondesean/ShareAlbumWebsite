@@ -74,6 +74,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
     const [selectedBulkTag, setSelectedBulkTag] = useState<string | null>(null);
     const [showBulkTagDropdown, setShowBulkTagDropdown] = useState(false);
     const [isMobile, setIsMobile] = useState(false);
+    const [zoomedPhoto, setZoomedPhoto] = useState<Photo | null>(null);
 
     // Detect mobile device
     useEffect(() => {
@@ -304,8 +305,12 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             });
             
             if (loadMore) {
-                // Append to existing photos
-                setPhotos(prev => [...prev, ...photosWithFavorites]);
+                // Append to existing photos, but filter out duplicates
+                setPhotos(prev => {
+                    const existingKeys = new Set(prev.map(p => p.key));
+                    const newPhotos = photosWithFavorites.filter(photo => !existingKeys.has(photo.key));
+                    return [...prev, ...newPhotos];
+                });
             } else {
                 // Replace photos (initial load)
                 setPhotos(photosWithFavorites);
@@ -896,7 +901,12 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
 
     return (
         <div
-            style={{ padding: "1rem" }}
+            style={{ 
+                padding: "1rem",
+                backgroundColor: "#1a1a1a",
+                color: "#ffffff",
+                minHeight: "100vh"
+            }}
             onClick={() => {
                 setContextMenu(null);
                 setShowYearDropdown(false);
@@ -1029,6 +1039,44 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
 
 
                     <button onClick={signOut}>Sign Out</button>
+                </div>
+            </div>
+
+            {/* Description Section */}
+            <div style={{
+                marginBottom: "1.5rem",
+                padding: "16px 20px",
+                backgroundColor: "#f8f9fa",
+                borderRadius: "8px",
+                border: "1px solid #e9ecef",
+                fontSize: "0.9rem",
+                lineHeight: "1.5",
+                color: "#495057"
+            }}>
+                <div style={{ marginBottom: "12px" }}>
+                    <strong style={{ color: "#007bff" }}>Welcome to your Family Shared Photo Album!</strong> 
+                     Browse through years of memories - here is a brief description of what you can do:
+                </div>
+                
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "12px" }}>
+                    <div>
+                        <strong>📸 Viewing:</strong> Click any photo for a zoomed view, or scroll down to load more memories
+                    </div>
+                    <div>
+                        <strong>❤️ Favorites:</strong> Right-click photos to favorite them - hearts show how many people liked each photo
+                    </div>
+                    <div>
+                        <strong>🏷️ Tagging:</strong> Right-click to tag photos, or use "Tag Multiple Photos" mode for bulk tagging
+                    </div>
+                    <div>
+                        <strong>📥 Download:</strong> Right-click any photo to save it to your device
+                    </div>
+                    <div>
+                        <strong>📤 Upload:</strong> Share your own photos using the upload button above
+                    </div>
+                    <div>
+                        <strong>🔄 Sync:</strong> Refresh the page to load new photos and save your favorites!
+                    </div>
                 </div>
             </div>
 
@@ -1340,7 +1388,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 )}
                 
                 {/* Regular Tags Section */}
-                <span style={{ fontWeight: "bold", color: "#666" }}>People & Tags:</span>
+                <span style={{ fontWeight: "bold" }}>People & Tags:</span>
                 {availableTags.map((tag: string) => {
                     const count = getTagCount(tag);
                     return (
@@ -1391,6 +1439,11 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                     e.preventDefault();
                                     e.stopPropagation();
                                     await toggleTag(photo.key, selectedBulkTag);
+                                } else {
+                                    // Show zoomed view
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setZoomedPhoto(photo);
                                 }
                             }}
                             style={{ 
@@ -1877,6 +1930,152 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                         >
                             Done
                         </button>
+                    </div>
+                </div>
+            )}
+
+            {/* Zoom Modal */}
+            {zoomedPhoto && (
+                <div
+                    style={{
+                        position: "fixed",
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        backgroundColor: "rgba(0,0,0,0.9)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        zIndex: 3000,
+                        padding: "20px",
+                    }}
+                    onClick={() => setZoomedPhoto(null)}
+                >
+                    <div
+                        style={{
+                            position: "relative",
+                            maxWidth: "90vw",
+                            maxHeight: "90vh",
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "center",
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        {/* Close button */}
+                        <button
+                            onClick={() => setZoomedPhoto(null)}
+                            style={{
+                                position: "absolute",
+                                top: "-10px",
+                                right: "-10px",
+                                width: "40px",
+                                height: "40px",
+                                borderRadius: "50%",
+                                backgroundColor: "rgba(255, 255, 255, 0.9)",
+                                color: "black",
+                                border: "none",
+                                cursor: "pointer",
+                                fontSize: "20px",
+                                fontWeight: "bold",
+                                zIndex: 3001,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                            }}
+                        >
+                            ×
+                        </button>
+                        
+                        {/* Zoomed image */}
+                        <img
+                            src={zoomedPhoto.url}
+                            alt={zoomedPhoto.key}
+                            style={{
+                                maxWidth: "100%",
+                                maxHeight: "80vh",
+                                objectFit: "contain",
+                                borderRadius: "8px",
+                                boxShadow: "0 4px 20px rgba(0,0,0,0.5)",
+                            }}
+                        />
+                        
+                        {/* Photo info */}
+                        <div
+                            style={{
+                                marginTop: "16px",
+                                padding: "12px 16px",
+                                backgroundColor: "rgba(255, 255, 255, 0.9)",
+                                borderRadius: "8px",
+                                maxWidth: "100%",
+                                textAlign: "center",
+                            }}
+                        >
+                            <p style={{ 
+                                margin: "0 0 8px 0", 
+                                fontSize: "0.9rem", 
+                                wordWrap: "break-word",
+                                color: "black"
+                            }}>
+                                {zoomedPhoto.key}
+                            </p>
+                            
+                            {/* Show tags if any */}
+                            {photoTags.get(zoomedPhoto.key) && photoTags.get(zoomedPhoto.key)!.size > 0 && (
+                                <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", justifyContent: "center" }}>
+                                    {Array.from(photoTags.get(zoomedPhoto.key)!).map((tag) => {
+                                        const isYearTag = /^(19\d{2}|20\d{2})$/.test(tag);
+                                        const isMonthTag = ["January", "February", "March", "April", "May", "June",
+                                            "July", "August", "September", "October", "November", "December"].includes(tag);
+                                        const isBaseTag = BASE_TAGS.includes(tag);
+                                        const isUserTag = !isBaseTag && !isYearTag && !isMonthTag;
+                                        
+                                        let backgroundColor = "#e6ccff";
+                                        let color = "#6f42c1";
+                                        
+                                        if (isYearTag) {
+                                            backgroundColor = "#d4edda";
+                                            color = "#155724";
+                                        } else if (isMonthTag) {
+                                            backgroundColor = "#cce7ff";
+                                            color = "#0056b3";
+                                        } else if (isUserTag) {
+                                            backgroundColor = "#ffc0cb";
+                                            color = "#8b008b";
+                                        }
+                                        
+                                        return (
+                                            <span
+                                                key={tag}
+                                                style={{
+                                                    fontSize: "0.75rem",
+                                                    padding: "2px 6px",
+                                                    backgroundColor,
+                                                    color,
+                                                    borderRadius: "4px",
+                                                    fontWeight: (isYearTag || isMonthTag) ? "bold" : "normal",
+                                                }}
+                                            >
+                                                {tag}
+                                            </span>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                            
+                            {/* Show favorite count if > 0 */}
+                            {zoomedPhoto.favoriteCount !== undefined && zoomedPhoto.favoriteCount > 0 && (
+                                <div style={{ 
+                                    marginTop: "8px", 
+                                    fontSize: "0.9rem", 
+                                    color: "#dc3545",
+                                    fontWeight: "bold"
+                                }}>
+                                    ❤️ {zoomedPhoto.favoriteCount} favorites
+                                </div>
+                            )}
+                        </div>
                     </div>
                 </div>
             )}
