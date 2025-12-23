@@ -244,7 +244,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             console.log("Photo filtering:", {
                 originalCount: photos.length,
                 filteredCount: filteredPhotos.length,
-                samplePhotos: photos.slice(0, 3).map(p => ({ key: p.key, url: p.url?.substring(0, 50) + '...' }))
+                samplePhotos: photos.slice(0, 3).map((p: Photo) => ({ key: p.key, url: p.url?.substring(0, 50) + '...' }))
             });
             console.log("Checking auto-retry conditions:", {
                 loadMore,
