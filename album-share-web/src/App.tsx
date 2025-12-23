@@ -34,6 +34,7 @@ const BASE_TAGS = import.meta.env.VITE_AVAILABLE_TAGS?.split(",") ||
         , "Daniel", "Kurt", "Bob"
         , "Patrick"
         , "Braden", "Kara", "Kelsey", "Kaitlyn"
+        ,"Keegan", "Ryan", "Hande"
         , "Steve", "Sean E"
         , "Owen", "Margot"
         , "Buddy", "Gigi", "Eddie", "Animals"
@@ -78,18 +79,13 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
     useEffect(() => {
         const checkMobile = () => {
             const isMobileDevice = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
-            console.log("Mobile detection:", {
-                isMobileDevice,
-                userAgent: navigator.userAgent,
-                screenWidth: window.screen.width,
-                windowWidth: window.innerWidth
-            });
             setIsMobile(isMobileDevice);
         };
         checkMobile();
         window.addEventListener('resize', checkMobile);
         return () => window.removeEventListener('resize', checkMobile);
     }, []);
+    const [retryCount, setRetryCount] = useState(0);
     const [loading, setLoading] = useState(false);
     const [hasMore, setHasMore] = useState(true);
     const [nextToken, setNextToken] = useState<string | null>(null);
@@ -199,19 +195,8 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 params.append('limit', '50');
                 params.append('nextToken', nextToken);
                 url += '?' + params.toString();
-            } else if (!loadMore) {
-                // First load - get default amount without pagination
-                const params = new URLSearchParams();
-                params.append('limit', '50');
-                url += '?' + params.toString();
             }
-
-            console.log("Request details:", {
-                url,
-                loadMore,
-                nextToken,
-                userAgent: navigator.userAgent.substring(0, 100)
-            });
+            // For first load, don't add any pagination parameters - let API return default first page
 
             const response = await fetch(url, {
                 headers: {
@@ -234,6 +219,8 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 hasPhotos: !!data.photos,
                 photosLength: data.photos?.length || 0,
                 hasPagination: !!data.pagination,
+                nextToken: data.pagination?.nextToken,
+                hasMore: data.pagination?.hasMore,
                 dataKeys: Object.keys(data),
                 userAgent: navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop'
             });
@@ -246,14 +233,34 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             
             if (pagination) {
                 setNextToken(pagination.nextToken);
-                setHasMore(pagination.hasMore);
+                // Only set hasMore to true if we actually have a nextToken
+                setHasMore(pagination.hasMore && pagination.nextToken ? true : false);
             } else {
                 // Legacy response - assume no more pages
                 setHasMore(false);
             }
             
             const filteredPhotos = filterDuplicatePhotos(photos);
-            console.log("After filtering duplicates:", filteredPhotos.length, "from", photos.length);
+            console.log("Photo filtering:", {
+                originalCount: photos.length,
+                filteredCount: filteredPhotos.length,
+                samplePhotos: photos.slice(0, 3).map(p => ({ key: p.key, url: p.url?.substring(0, 50) + '...' }))
+            });
+            console.log("Checking auto-retry conditions:", {
+                loadMore,
+                filteredPhotosLength: filteredPhotos.length,
+                hasMore: pagination?.hasMore,
+                hasNextToken: !!pagination?.nextToken
+            });
+            
+            // If first load returned no photos but has more pages, automatically load next page
+            if (!loadMore && filteredPhotos.length === 0 && pagination?.hasMore && pagination?.nextToken && retryCount < 3) {
+                console.log("First page empty but has more pages, loading next page automatically (retry", retryCount + 1, ")");
+                setRetryCount(prev => prev + 1);
+                setLoading(false); // Reset loading state
+                setTimeout(() => fetchPhotos(true), 100); // Load next page after a brief delay
+                return;
+            }
             
             // Mark favorites and sort
             const photosWithFavorites = filteredPhotos.map((photo: Photo) => ({
@@ -298,14 +305,9 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             
             if (loadMore) {
                 // Append to existing photos
-                setPhotos(prev => {
-                    const newPhotos = [...prev, ...photosWithFavorites];
-                    console.log("Appending photos - prev:", prev.length, "new:", photosWithFavorites.length, "total:", newPhotos.length);
-                    return newPhotos;
-                });
+                setPhotos(prev => [...prev, ...photosWithFavorites]);
             } else {
                 // Replace photos (initial load)
-                console.log("Setting initial photos:", photosWithFavorites.length);
                 setPhotos(photosWithFavorites);
             }
             
@@ -320,7 +322,14 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             // Fetch tags for new photos
             await fetchAllTags(idToken, photosWithFavorites);
         } catch (err: any) {
-            console.error(err);
+            console.error("Fetch photos error:", err);
+            console.error("Mobile debug:", {
+                isMobile: window.matchMedia('(hover: none) and (pointer: coarse)').matches,
+                userAgent: navigator.userAgent,
+                error: err.message,
+                loadMore,
+                url: import.meta.env.VITE_API_URL
+            });
             setError(err.message);
         } finally {
             setLoading(false);
@@ -370,13 +379,13 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                     const data = await response.json();
                     const tags = new Set<string>(data.tags?.map((t: { tag: string }) => t.tag) || []);
                     
-                    // Add year and month tags if photo name contains them
+                    // Only add year and month tags if they're not already present
                     const year = extractYearFromPhotoName(photo.key);
-                    if (year) {
+                    if (year && !tags.has(year)) {
                         tags.add(year);
                     }
                     const month = extractMonthFromPhotoName(photo.key);
-                    if (month) {
+                    if (month && !tags.has(month)) {
                         tags.add(month);
                     }
                     
@@ -423,6 +432,16 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
     };
 
     const toggleFavorite = async (photoKey: string) => {
+        // Optimistically update UI first
+        const isFavorite = favorites.has(photoKey);
+        const newFavorites = new Set(favorites);
+        if (isFavorite) {
+            newFavorites.delete(photoKey);
+        } else {
+            newFavorites.add(photoKey);
+        }
+        setFavorites(newFavorites);
+
         try {
             const session = await fetchAuthSession();
             const idToken = session.tokens?.idToken?.toString();
@@ -431,7 +450,6 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 throw new Error("No ID token available");
             }
 
-            const isFavorite = favorites.has(photoKey);
             const method = isFavorite ? "DELETE" : "POST";
             const apiUrl = import.meta.env.VITE_API_URL.replace("/photos", "/favorites");
 
@@ -446,17 +464,13 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
 
             if (!response.ok) throw new Error("Failed to update favorite");
 
-            // Update local state (just toggle the border, don't re-sort)
-            const newFavorites = new Set(favorites);
-            if (isFavorite) {
-                newFavorites.delete(photoKey);
-            } else {
-                newFavorites.add(photoKey);
-            }
-            setFavorites(newFavorites);
+            // Success - UI is already updated optimistically
         } catch (err: any) {
             console.error(err);
             setError(err.message);
+            
+            // Revert the optimistic update on error
+            setFavorites(favorites); // Restore original state
         }
     };
 
@@ -878,17 +892,6 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
         }
         
         return true;
-    });
-
-    // Debug logging for render
-    console.log("Render state:", {
-        totalPhotos: photos.length,
-        filteredPhotos: filteredPhotos.length,
-        hasError: !!error,
-        loading,
-        selectedFilter,
-        selectedYears: selectedYears.size,
-        selectedMonths: selectedMonths.size
     });
 
     return (
@@ -1363,7 +1366,8 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             </div>
 
             {error && <p style={{ color: "red" }}>Error: {error}</p>}
-            {!error && !filteredPhotos.length && <p>Loading photos...</p>}
+            {!error && filteredPhotos.length === 0 && loading && <p>Loading photos...</p>}
+            {!error && filteredPhotos.length === 0 && !loading && <p>No photos found.</p>}
             <div
                 style={{
                     display: "grid",
