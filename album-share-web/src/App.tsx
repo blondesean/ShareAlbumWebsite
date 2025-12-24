@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Amplify } from "aws-amplify";
 import { Authenticator } from "@aws-amplify/ui-react";
 import { fetchAuthSession } from "aws-amplify/auth";
@@ -90,6 +90,20 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
     const [loading, setLoading] = useState(false);
     const [hasMore, setHasMore] = useState(true);
     const [nextToken, setNextToken] = useState<string | null>(null);
+    const [isRequestInProgress, setIsRequestInProgress] = useState(false);
+
+    // Refs for scroll handler to avoid stale closures and prevent frequent re-registration
+    const hasMoreRef = useRef(hasMore);
+    const loadingRef = useRef(loading);
+    
+    // Update refs when state changes
+    useEffect(() => {
+        hasMoreRef.current = hasMore;
+    }, [hasMore]);
+    
+    useEffect(() => {
+        loadingRef.current = loading;
+    }, [loading]);
 
     // Helper function to extract year from photo name
     const extractYearFromPhotoName = (photoKey: string): string | null => {
@@ -177,9 +191,11 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
     };
 
     const fetchPhotos = async (loadMore = false) => {
-        if (loading || (!hasMore && loadMore)) return;
+        if (loading || (!hasMore && loadMore) || isRequestInProgress) return;
         
         setLoading(true);
+        setIsRequestInProgress(true);
+        
         try {
             // Get Cognito ID token (required for API Gateway Cognito User Pool authorizer)
             const session = await fetchAuthSession();
@@ -197,7 +213,6 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 params.append('nextToken', nextToken);
                 url += '?' + params.toString();
             }
-            // For first load, don't add any pagination parameters - let API return default first page
 
             const response = await fetch(url, {
                 headers: {
@@ -216,28 +231,15 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             }
               
             const data = await response.json();
-            console.log("API response structure:", {
-                hasPhotos: !!data.photos,
-                photosLength: data.photos?.length || 0,
-                hasPagination: !!data.pagination,
-                nextToken: data.pagination?.nextToken,
-                hasMore: data.pagination?.hasMore,
-                dataKeys: Object.keys(data),
-                userAgent: navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop'
-            });
             
             // Handle paginated response format
             const photos = data.photos || data; // Support both paginated and legacy responses
             const pagination = data.pagination;
             
-            console.log("Photos received:", photos.length, "Has more:", pagination?.hasMore);
-            
             if (pagination) {
                 setNextToken(pagination.nextToken);
-                // Only set hasMore to true if we actually have a nextToken
-                setHasMore(pagination.hasMore && pagination.nextToken ? true : false);
+                setHasMore(pagination.hasMore && !!pagination.nextToken);
             } else {
-                // Legacy response - assume no more pages
                 setHasMore(false);
             }
             
@@ -254,14 +256,14 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 hasNextToken: !!pagination?.nextToken
             });
             
-            // If first load returned no photos but has more pages, automatically load next page
-            if (!loadMore && filteredPhotos.length === 0 && pagination?.hasMore && pagination?.nextToken && retryCount < 3) {
-                console.log("First page empty but has more pages, loading next page automatically (retry", retryCount + 1, ")");
-                setRetryCount(prev => prev + 1);
-                setLoading(false); // Reset loading state
-                setTimeout(() => fetchPhotos(true), 100); // Load next page after a brief delay
-                return;
-            }
+            // Temporarily disable auto-retry to debug pagination
+            // if (!loadMore && filteredPhotos.length === 0 && pagination?.hasMore && pagination?.nextToken && retryCount < 3) {
+            //     console.log("Auto-retry triggered - First page empty but has more pages, loading next page automatically (retry", retryCount + 1, ")");
+            //     setRetryCount(prev => prev + 1);
+            //     setLoading(false); // Reset loading state
+            //     setTimeout(() => fetchPhotos(true), 100); // Load next page after a brief delay
+            //     return;
+            // }
             
             // Mark favorites and sort
             const photosWithFavorites = filteredPhotos.map((photo: Photo) => ({
@@ -309,6 +311,12 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 setPhotos(prev => {
                     const existingKeys = new Set(prev.map(p => p.key));
                     const newPhotos = photosWithFavorites.filter(photo => !existingKeys.has(photo.key));
+                    
+                    console.log(`Loading more photos: ${prev.length} existing + ${newPhotos.length} new = ${prev.length + newPhotos.length} total`);
+                    console.log('Sample existing keys:', Array.from(existingKeys).slice(0, 3));
+                    console.log('Sample new photo keys:', photosWithFavorites.slice(0, 3).map(p => p.key));
+                    console.log('Sample filtered new keys:', newPhotos.slice(0, 3).map(p => p.key));
+                    
                     return [...prev, ...newPhotos];
                 });
             } else {
@@ -337,7 +345,10 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             });
             setError(err.message);
         } finally {
+            // ALWAYS reset loading state, even if no new photos were added
+            console.log('Resetting loading state to false');
             setLoading(false);
+            setIsRequestInProgress(false);
         }
     };
 
@@ -347,29 +358,50 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
 
     // Infinite scroll effect
     useEffect(() => {
+        let scrollTimeout: NodeJS.Timeout | null = null;
+        
         const handleScroll = () => {
-            // Check if user is near bottom of page (within 1000px)
-            const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-            const windowHeight = window.innerHeight;
-            const documentHeight = document.documentElement.scrollHeight;
-            
-            if (scrollTop + windowHeight >= documentHeight - 1000) {
-                // User is near bottom, load more photos
-                if (hasMore && !loading) {
-                    fetchPhotos(true);
-                }
+            // Throttle scroll events to prevent rapid-fire requests
+            if (scrollTimeout) {
+                clearTimeout(scrollTimeout);
             }
+            
+            scrollTimeout = setTimeout(() => {
+                // Check if user is near bottom of page (within 1000px) or at the bottom
+                const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+                const windowHeight = window.innerHeight;
+                const documentHeight = document.documentElement.scrollHeight;
+                
+                // More generous bottom detection - within 1000px OR within 10px of actual bottom
+                const nearBottom = scrollTop + windowHeight >= documentHeight - 1000;
+                const atBottom = scrollTop + windowHeight >= documentHeight - 10;
+                
+                if (nearBottom || atBottom) {
+                    // User is near bottom or at bottom, load more photos
+                    if (hasMoreRef.current && !loadingRef.current) {
+                        console.log('Triggering fetchPhotos from scroll');
+                        fetchPhotos(true);
+                    }
+                }
+            }, 100); // 100ms throttle
         };
 
         // Add scroll listener
         window.addEventListener('scroll', handleScroll);
         
         // Cleanup
-        return () => window.removeEventListener('scroll', handleScroll);
-    }, [hasMore, loading]); // Re-run when hasMore or loading changes
+        return () => {
+            window.removeEventListener('scroll', handleScroll);
+            if (scrollTimeout) {
+                clearTimeout(scrollTimeout);
+            }
+        };
+    }, []); // No dependencies - refs handle state access, preventing frequent re-registration
 
     const fetchAllTags = async (idToken: string, photosList: Photo[]) => {
         const tagsMap = new Map<string, Set<string>>();
+        
+        console.log(`Fetching tags for ${photosList.length} photos`);
         
         for (const photo of photosList) {
             try {
@@ -380,44 +412,33 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                     },
                 });
                 
+                const tags = new Set<string>();
+                
                 if (response.ok) {
                     const data = await response.json();
-                    const tags = new Set<string>(data.tags?.map((t: { tag: string }) => t.tag) || []);
-                    
-                    // Only add year and month tags if they're not already present
-                    const year = extractYearFromPhotoName(photo.key);
-                    if (year && !tags.has(year)) {
-                        tags.add(year);
-                    }
-                    const month = extractMonthFromPhotoName(photo.key);
-                    if (month && !tags.has(month)) {
-                        tags.add(month);
-                    }
-                    
-                    if (tags.size > 0) {
-                        tagsMap.set(photo.key, tags);
-                    }
+                    const apiTags = data.tags?.map((t: { tag: string }) => t.tag) || [];
+                    apiTags.forEach((tag: string) => tags.add(tag));
                 } else {
                     console.warn(`Failed to fetch tags for ${photo.key}, status:`, response.status);
-                    
-                    // Even if API call fails, still add year and month tags if available
-                    const tags = new Set<string>();
-                    const year = extractYearFromPhotoName(photo.key);
-                    if (year) {
-                        tags.add(year);
-                    }
-                    const month = extractMonthFromPhotoName(photo.key);
-                    if (month) {
-                        tags.add(month);
-                    }
-                    if (tags.size > 0) {
-                        tagsMap.set(photo.key, tags);
-                    }
                 }
+                
+                // Always add year and month tags if available (regardless of API success)
+                const year = extractYearFromPhotoName(photo.key);
+                if (year) {
+                    tags.add(year);
+                }
+                const month = extractMonthFromPhotoName(photo.key);
+                if (month) {
+                    tags.add(month);
+                }
+                
+                // Always add the photo to the map, even if it has no tags
+                tagsMap.set(photo.key, tags);
+                
             } catch (err) {
                 console.error(`Failed to fetch tags for ${photo.key}`, err);
                 
-                // Even if API call fails, still add year and month tags if available
+                // Even on error, add year and month tags if available
                 const tags = new Set<string>();
                 const year = extractYearFromPhotoName(photo.key);
                 if (year) {
@@ -427,13 +448,21 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 if (month) {
                     tags.add(month);
                 }
-                if (tags.size > 0) {
-                    tagsMap.set(photo.key, tags);
-                }
+                tagsMap.set(photo.key, tags);
             }
         }
         
-        setPhotoTags(tagsMap);
+        console.log(`Processed ${tagsMap.size} photos for tags`);
+        
+        setPhotoTags(prevTags => {
+            const newTags = new Map(prevTags);
+            console.log(`Merging tags: ${prevTags.size} existing + ${tagsMap.size} new`);
+            tagsMap.forEach((tags, photoKey) => {
+                newTags.set(photoKey, tags);
+            });
+            console.log(`Total tags after merge: ${newTags.size}`);
+            return newTags;
+        });
     };
 
     const toggleFavorite = async (photoKey: string) => {
@@ -1054,8 +1083,8 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 color: "#495057"
             }}>
                 <div style={{ marginBottom: "12px" }}>
-                    <strong style={{ color: "#007bff" }}>Welcome to your Family Shared Photo Album!</strong> 
-                     Browse through years of memories - here is a brief description of what you can do:
+                    <strong style={{ color: "#007bff" }}>Welcome to your Family Shared Photo Album! </strong> 
+                    Browse through years of memories - here is a brief description of what you can do:
                 </div>
                 
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "12px" }}>
@@ -1069,7 +1098,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                         <strong>🏷️ Tagging:</strong> Right-click to tag photos, or use "Tag Multiple Photos" mode for bulk tagging
                     </div>
                     <div>
-                        <strong>📥 Download:</strong> Right-click any photo to save it to your device
+                        <strong>📥 Download:</strong> Right-click any photo to save it to your computer or tap and long press on mobile
                     </div>
                     <div>
                         <strong>📤 Upload:</strong> Share your own photos using the upload button above
@@ -1657,28 +1686,30 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                     >
                         Tag Photo
                     </button>
-                    <button
-                        onClick={() => {
-                            const photo = photos.find(p => p.key === contextMenu.photoKey);
-                            if (photo) {
-                                downloadPhoto(contextMenu.photoKey, photo.url);
-                            }
-                            setContextMenu(null);
-                        }}
-                        style={{
-                            display: "block",
-                            width: "100%",
-                            padding: "8px 16px",
-                            border: "none",
-                            background: "none",
-                            textAlign: "left",
-                            cursor: "pointer",
-                        }}
-                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f0f0f0")}
-                        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-                    >
-                        Download Photo
-                    </button>
+                    {!isMobile && (
+                        <button
+                            onClick={() => {
+                                const photo = photos.find(p => p.key === contextMenu.photoKey);
+                                if (photo) {
+                                    downloadPhoto(contextMenu.photoKey, photo.url);
+                                }
+                                setContextMenu(null);
+                            }}
+                            style={{
+                                display: "block",
+                                width: "100%",
+                                padding: "8px 16px",
+                                border: "none",
+                                background: "none",
+                                textAlign: "left",
+                                cursor: "pointer",
+                            }}
+                            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f0f0f0")}
+                            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                        >
+                            Download Photo
+                        </button>
+                    )}
                 </div>
             )}
 
@@ -1703,20 +1734,34 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                             backgroundColor: "white",
                             padding: "20px",
                             borderRadius: "8px",
-                            minWidth: "500px",
-                            maxWidth: "600px",
+                            minWidth: isMobile ? "90vw" : "500px",
+                            maxWidth: isMobile ? "95vw" : "600px",
+                            maxHeight: isMobile ? "80vh" : "auto",
+                            overflowY: isMobile ? "auto" : "visible",
                         }}
                         onClick={(e) => e.stopPropagation()}
                     >
                         <h3 style={{ marginTop: 0 }}>Select Tags</h3>
                         
-                        <div style={{ display: "flex", gap: "16px", maxHeight: "400px", overflowY: "auto" }}>
+                        <div style={{ 
+                            display: "flex", 
+                            flexDirection: isMobile ? "column" : "row",
+                            gap: "16px", 
+                            maxHeight: isMobile ? "none" : "400px", 
+                            overflowY: isMobile ? "visible" : "auto" 
+                        }}>
                             {/* People & Names Column */}
-                            <div style={{ flex: 1, minWidth: "150px" }}>
+                            <div style={{ flex: 1, minWidth: isMobile ? "auto" : "150px" }}>
                                 <h4 style={{ margin: "0 0 8px 0", fontSize: "0.9rem", color: "#666", borderBottom: "1px solid #eee", paddingBottom: "4px" }}>
                                     People & Names
                                 </h4>
-                                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                <div style={{ 
+                                    display: "flex", 
+                                    flexDirection: "column", 
+                                    gap: "4px",
+                                    maxHeight: isMobile ? "200px" : "none",
+                                    overflowY: isMobile ? "auto" : "visible"
+                                }}>
                                     {availableTags.map((tag: string) => {
                                         const isSelected = photoTags.get(tagModal.photoKey)?.has(tag) || false;
                                         const isBaseTag = BASE_TAGS.includes(tag);
@@ -1759,11 +1804,17 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                             </div>
                             
                             {/* Years Column */}
-                            <div style={{ flex: 1, minWidth: "120px" }}>
+                            <div style={{ flex: 1, minWidth: isMobile ? "auto" : "120px" }}>
                                 <h4 style={{ margin: "0 0 8px 0", fontSize: "0.9rem", color: "#666", borderBottom: "1px solid #eee", paddingBottom: "4px" }}>
                                     Years
                                 </h4>
-                                <div style={{ display: "flex", flexDirection: "column", gap: "4px", maxHeight: "350px", overflowY: "auto" }}>
+                                <div style={{ 
+                                    display: "flex", 
+                                    flexDirection: "column", 
+                                    gap: "4px", 
+                                    maxHeight: isMobile ? "200px" : "350px", 
+                                    overflowY: "auto" 
+                                }}>
                                     {Array.from(yearTags).sort().map((year: string) => {
                                         const isSelected = photoTags.get(tagModal.photoKey)?.has(year) || false;
                                         return (
@@ -1794,11 +1845,17 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                             </div>
                             
                             {/* Months Column */}
-                            <div style={{ flex: 1, minWidth: "120px" }}>
+                            <div style={{ flex: 1, minWidth: isMobile ? "auto" : "120px" }}>
                                 <h4 style={{ margin: "0 0 8px 0", fontSize: "0.9rem", color: "#666", borderBottom: "1px solid #eee", paddingBottom: "4px" }}>
                                     Months
                                 </h4>
-                                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                <div style={{ 
+                                    display: "flex", 
+                                    flexDirection: "column", 
+                                    gap: "4px",
+                                    maxHeight: isMobile ? "200px" : "none",
+                                    overflowY: isMobile ? "auto" : "visible"
+                                }}>
                                     {Array.from(monthTags).sort((a, b) => {
                                         const monthOrder = [
                                             "January", "February", "March", "April", "May", "June",
@@ -2073,6 +2130,21 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                     fontWeight: "bold"
                                 }}>
                                     ❤️ {zoomedPhoto.favoriteCount} favorites
+                                </div>
+                            )}
+                            
+                            {/* Mobile save instruction */}
+                            {isMobile && (
+                                <div style={{ 
+                                    marginTop: "8px", 
+                                    fontSize: "0.8rem", 
+                                    color: "#666",
+                                    fontStyle: "italic",
+                                    padding: "4px 8px",
+                                    backgroundColor: "rgba(0,0,0,0.1)",
+                                    borderRadius: "4px"
+                                }}>
+                                    💡 Long-press the image above to save to your photo album
                                 </div>
                             )}
                         </div>
