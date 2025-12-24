@@ -75,6 +75,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
     const [showBulkTagDropdown, setShowBulkTagDropdown] = useState(false);
     const [isMobile, setIsMobile] = useState(false);
     const [zoomedPhoto, setZoomedPhoto] = useState<Photo | null>(null);
+    const [favoritesLoaded, setFavoritesLoaded] = useState(false);
 
     // Detect mobile device
     useEffect(() => {
@@ -86,7 +87,6 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
         window.addEventListener('resize', checkMobile);
         return () => window.removeEventListener('resize', checkMobile);
     }, []);
-    const [retryCount, setRetryCount] = useState(0);
     const [loading, setLoading] = useState(false);
     const [hasMore, setHasMore] = useState(true);
     const [nextToken, setNextToken] = useState<string | null>(null);
@@ -105,91 +105,6 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
         loadingRef.current = loading;
     }, [loading]);
 
-    // Helper function to extract year from photo name
-    const extractYearFromPhotoName = (photoKey: string): string | null => {
-        // Extract filename from the key (remove path if present)
-        const filename = photoKey.split('/').pop() || photoKey;
-        
-        // Check if filename starts with a 4-digit year (19xx or 20xx)
-        const yearMatch = filename.match(/^(19\d{2}|20\d{2})/);
-        return yearMatch ? yearMatch[1] : null;
-    };
-
-    // Helper function to extract month from photo name
-    const extractMonthFromPhotoName = (photoKey: string): string | null => {
-        // Extract filename from the key (remove path if present)
-        const filename = photoKey.split('/').pop() || photoKey;
-        
-        // List of month names to search for
-        const monthNames = [
-            "January", "February", "March", "April", "May", "June",
-            "July", "August", "September", "October", "November", "December"
-        ];
-        
-        // Convert filename to lowercase for case-insensitive matching
-        const lowerFilename = filename.toLowerCase();
-        
-        // Check if any month name appears in the filename
-        for (const month of monthNames) {
-            if (lowerFilename.includes(month.toLowerCase())) {
-                return month;
-            }
-        }
-        
-        return null;
-    };
-
-    // Helper function to filter photos: only filter out non-_a.jpg versions if _a.jpg exists
-    const filterDuplicatePhotos = (photos: Photo[]): Photo[] => {
-        // Create a set of all photo keys for quick lookup
-        const photoKeys = new Set(photos.map(p => p.key));
-        
-        return photos.filter((photo) => {
-            const key = photo.key;
-            
-
-            
-            // If it's an _a.jpg version, always keep it
-            if (key.includes("_a.jpg")) {
-                return true;
-            }
-            
-            const filename = key.split('/').pop() || key;
-            const lastSlashIndex = key.lastIndexOf('/');
-            const path = lastSlashIndex >= 0 ? key.substring(0, lastSlashIndex + 1) : '';
-            
-            // Filter out _b.jpg if _a.jpg exists
-            if (filename.includes("_b.jpg")) {
-                // Try to find the corresponding _a.jpg version
-                const baseName = filename.replace("_b.jpg", "");
-                const enhancedName = `${baseName}_a.jpg`;
-                const enhancedKey = path + enhancedName;
-                
-                // If _a.jpg version exists, filter out this _b.jpg
-                if (photoKeys.has(enhancedKey)) {
-                    return false;
-                }
-            }
-            
-            // Check if this photo matches the pattern <YEAR>_<MONTH>_<NUMBER>.jpg
-            // and if there's a corresponding _a.jpg version
-            // Pattern: <YEAR>_<MONTH>_<NUMBER>.jpg
-            // We'll check if removing .jpg and adding _a.jpg exists
-            if (filename.endsWith(".jpg") && !filename.includes("_a.jpg") && !filename.includes("_b.jpg")) {
-                // Try to find the _a.jpg version
-                const baseName = filename.replace(".jpg", "");
-                const enhancedName = `${baseName}_a.jpg`;
-                const enhancedKey = path + enhancedName;
-                
-                // If enhanced version exists, filter out this one
-                if (photoKeys.has(enhancedKey)) {
-                    return false;
-                }
-            }
-            return true;
-        });
-    };
-
     const fetchPhotos = async (loadMore = false) => {
         if (loading || (!hasMore && loadMore) || isRequestInProgress) return;
         
@@ -205,13 +120,51 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 throw new Error("No ID token available - please sign out and sign back in");
             }
 
-            // Build URL with pagination parameters
+            let allPhotos: Photo[] = [];
+
+            // Step 1: Load ALL favorites first (only on initial load)
+            if (!loadMore && !favoritesLoaded) {
+                try {
+                    console.log("Loading all favorites first...");
+                    const favoritesApiUrl = import.meta.env.VITE_API_URL.replace("/photos", "/favorites");
+                    // Remove limit to get ALL favorites
+                    const favoritesResponse = await fetch(favoritesApiUrl, {
+                        headers: {
+                            Authorization: `Bearer ${idToken}`,
+                        },
+                    });
+
+                    if (favoritesResponse.ok) {
+                        const favoritesData = await favoritesResponse.json();
+                        const favoritePhotos = favoritesData.favorites || [];
+                        console.log(`Loaded ${favoritePhotos.length} favorite photos (all favorites)`);
+                        
+                        // Mark as favorites and add to photos
+                        const favoritesWithFlag = favoritePhotos.map((photo: Photo) => ({
+                            ...photo,
+                            isFavorite: true,
+                        }));
+                        
+                        allPhotos = [...favoritesWithFlag];
+                        setFavoritesLoaded(true);
+                    } else {
+                        console.warn("Failed to load favorites, continuing with regular photos");
+                    }
+                } catch (favErr) {
+                    console.warn("Error loading favorites:", favErr);
+                }
+            }
+
+            // Step 2: Load regular photos (with random starting point and backend filtering)
             let url = import.meta.env.VITE_API_URL;
             if (loadMore && nextToken) {
                 const params = new URLSearchParams();
-                params.append('limit', '50');
+                params.append('limit', '25');
                 params.append('nextToken', nextToken);
                 url += '?' + params.toString();
+            } else {
+                // First load or no pagination - backend will start from random position
+                url += `?limit=25`;
             }
 
             const response = await fetch(url, {
@@ -224,16 +177,11 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 const text = await response.text();
                 throw new Error(`Failed to fetch photos: ${response.status} ${text}`);
             }
-
-            if (!response.ok) {
-                const text = await response.text();
-                throw new Error(`Failed to fetch photos: ${response.status} ${text}`);
-            }
               
             const data = await response.json();
             
             // Handle paginated response format
-            const photos = data.photos || data; // Support both paginated and legacy responses
+            const regularPhotos = data.photos || data;
             const pagination = data.pagination;
             
             if (pagination) {
@@ -243,89 +191,45 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 setHasMore(false);
             }
             
-            const filteredPhotos = filterDuplicatePhotos(photos);
-            console.log("Photo filtering:", {
-                originalCount: photos.length,
-                filteredCount: filteredPhotos.length,
-                samplePhotos: photos.slice(0, 3).map((p: Photo) => ({ key: p.key, url: p.url?.substring(0, 50) + '...' }))
-            });
-            console.log("Checking auto-retry conditions:", {
-                loadMore,
-                filteredPhotosLength: filteredPhotos.length,
-                hasMore: pagination?.hasMore,
-                hasNextToken: !!pagination?.nextToken
-            });
+            console.log(`Loaded ${regularPhotos.length} regular photos`);
             
-            // Temporarily disable auto-retry to debug pagination
-            // if (!loadMore && filteredPhotos.length === 0 && pagination?.hasMore && pagination?.nextToken && retryCount < 3) {
-            //     console.log("Auto-retry triggered - First page empty but has more pages, loading next page automatically (retry", retryCount + 1, ")");
-            //     setRetryCount(prev => prev + 1);
-            //     setLoading(false); // Reset loading state
-            //     setTimeout(() => fetchPhotos(true), 100); // Load next page after a brief delay
-            //     return;
-            // }
-            
-            // Mark favorites and sort
-            const photosWithFavorites = filteredPhotos.map((photo: Photo) => ({
+            // Mark favorites for regular photos and filter out any that are already in favorites
+            const regularPhotosWithFavorites = regularPhotos.map((photo: Photo) => ({
                 ...photo,
                 isFavorite: photo.isFavorite || false,
             }));
 
-            // Sort: by favorite count (desc), then by year (desc), then by month (chronological)
-            photosWithFavorites.sort((a: Photo, b: Photo) => {
-                // 1. Sort by favorite count (higher counts first)
-                const aFavCount = a.favoriteCount || 0;
-                const bFavCount = b.favoriteCount || 0;
-                if (aFavCount !== bFavCount) {
-                    return bFavCount - aFavCount;
-                }
-                
-                // 2. Sort by year (newer years first)
-                const aYear = extractYearFromPhotoName(a.key);
-                const bYear = extractYearFromPhotoName(b.key);
-                if (aYear && bYear && aYear !== bYear) {
-                    return parseInt(bYear) - parseInt(aYear);
-                }
-                if (aYear && !bYear) return -1;
-                if (!aYear && bYear) return 1;
-                
-                // 3. Sort by month (chronological order within same year)
-                const aMonth = extractMonthFromPhotoName(a.key);
-                const bMonth = extractMonthFromPhotoName(b.key);
-                if (aMonth && bMonth && aMonth !== bMonth) {
-                    const monthOrder = [
-                        "January", "February", "March", "April", "May", "June",
-                        "July", "August", "September", "October", "November", "December"
-                    ];
-                    return monthOrder.indexOf(aMonth) - monthOrder.indexOf(bMonth);
-                }
-                if (aMonth && !bMonth) return -1;
-                if (!aMonth && bMonth) return 1;
-                
-                // 4. Finally sort by photo key as tiebreaker
-                return a.key.localeCompare(b.key);
-            });
+            // If we have favorites loaded, filter out any regular photos that are already favorites
+            let filteredRegularPhotos = regularPhotosWithFavorites;
+            if (favoritesLoaded) {
+                const favoriteKeys = new Set(allPhotos.filter((p: Photo) => p.isFavorite).map((p: Photo) => p.key));
+                filteredRegularPhotos = regularPhotosWithFavorites.filter((photo: Photo) => !favoriteKeys.has(photo.key));
+                console.log(`Filtered out ${regularPhotosWithFavorites.length - filteredRegularPhotos.length} photos that were already in favorites`);
+            }
+
+            // Combine favorites and regular photos
+            allPhotos = [...allPhotos, ...filteredRegularPhotos];
             
             if (loadMore) {
                 // Append to existing photos, but filter out duplicates
                 setPhotos(prev => {
-                    const existingKeys = new Set(prev.map(p => p.key));
-                    const newPhotos = photosWithFavorites.filter(photo => !existingKeys.has(photo.key));
+                    const existingKeys = new Set(prev.map((p: Photo) => p.key));
+                    const newPhotos = allPhotos.filter(photo => !existingKeys.has(photo.key));
                     
                     console.log(`Loading more photos: ${prev.length} existing + ${newPhotos.length} new = ${prev.length + newPhotos.length} total`);
-                    console.log('Sample existing keys:', Array.from(existingKeys).slice(0, 3));
-                    console.log('Sample new photo keys:', photosWithFavorites.slice(0, 3).map(p => p.key));
-                    console.log('Sample filtered new keys:', newPhotos.slice(0, 3).map(p => p.key));
                     
                     return [...prev, ...newPhotos];
                 });
             } else {
-                // Replace photos (initial load)
-                setPhotos(photosWithFavorites);
+                // Replace photos (initial load) - all favorites are at the top
+                setPhotos(allPhotos);
+                const favoriteCount = allPhotos.filter(p => p.isFavorite).length;
+                const regularCount = allPhotos.length - favoriteCount;
+                console.log(`Initial load: ${allPhotos.length} total photos (${favoriteCount} favorites + ${regularCount} regular)`);
             }
             
             // Build favorites set
-            const favSet = new Set<string>(photosWithFavorites.filter((p: Photo) => p.isFavorite).map((p: Photo) => p.key));
+            const favSet = new Set<string>(allPhotos.filter((p: Photo) => p.isFavorite).map((p: Photo) => p.key));
             if (loadMore) {
                 setFavorites(prev => new Set([...prev, ...favSet]));
             } else {
@@ -333,20 +237,11 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             }
 
             // Fetch tags for new photos
-            await fetchAllTags(idToken, photosWithFavorites);
+            await fetchAllTags(idToken, allPhotos);
         } catch (err: any) {
             console.error("Fetch photos error:", err);
-            console.error("Mobile debug:", {
-                isMobile: window.matchMedia('(hover: none) and (pointer: coarse)').matches,
-                userAgent: navigator.userAgent,
-                error: err.message,
-                loadMore,
-                url: import.meta.env.VITE_API_URL
-            });
             setError(err.message);
         } finally {
-            // ALWAYS reset loading state, even if no new photos were added
-            console.log('Resetting loading state to false');
             setLoading(false);
             setIsRequestInProgress(false);
         }
@@ -422,32 +317,14 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                     console.warn(`Failed to fetch tags for ${photo.key}, status:`, response.status);
                 }
                 
-                // Always add year and month tags if available (regardless of API success)
-                const year = extractYearFromPhotoName(photo.key);
-                if (year) {
-                    tags.add(year);
-                }
-                const month = extractMonthFromPhotoName(photo.key);
-                if (month) {
-                    tags.add(month);
-                }
-                
                 // Always add the photo to the map, even if it has no tags
                 tagsMap.set(photo.key, tags);
                 
             } catch (err) {
                 console.error(`Failed to fetch tags for ${photo.key}`, err);
                 
-                // Even on error, add year and month tags if available
+                // Even on error, add the photo to the map with empty tags
                 const tags = new Set<string>();
-                const year = extractYearFromPhotoName(photo.key);
-                if (year) {
-                    tags.add(year);
-                }
-                const month = extractMonthFromPhotoName(photo.key);
-                if (month) {
-                    tags.add(month);
-                }
                 tagsMap.set(photo.key, tags);
             }
         }
@@ -738,26 +615,12 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                         const data = await response.json();
                         const filteredPhotos = data.filter((photo: Photo) => photo.key.includes("_a.jpg"));
                         
-                        // Extract years and months from photo names and collect unique values
-                        const detectedYears = new Set<string>();
-                        const detectedMonths = new Set<string>();
-                        filteredPhotos.forEach((photo: Photo) => {
-                            const year = extractYearFromPhotoName(photo.key);
-                            if (year) {
-                                detectedYears.add(year);
-                            }
-                            const month = extractMonthFromPhotoName(photo.key);
-                            if (month) {
-                                detectedMonths.add(month);
-                            }
-                        });
-                        // Note: yearTags and monthTags are set in the main useEffect
-                        
                         const photosWithFavorites = filteredPhotos.map((photo: Photo) => ({
                             ...photo,
                             isFavorite: photo.isFavorite || false,
                         }));
                         
+                        // Simple sort by photo key (no automated year/month sorting)
                         photosWithFavorites.sort((a: Photo, b: Photo) => {
                             // 1. Sort by favorite count (higher counts first)
                             const aFavCount = a.favoriteCount || 0;
@@ -766,29 +629,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                 return bFavCount - aFavCount;
                             }
                             
-                            // 2. Sort by year (newer years first)
-                            const aYear = extractYearFromPhotoName(a.key);
-                            const bYear = extractYearFromPhotoName(b.key);
-                            if (aYear && bYear && aYear !== bYear) {
-                                return parseInt(bYear) - parseInt(aYear);
-                            }
-                            if (aYear && !bYear) return -1;
-                            if (!aYear && bYear) return 1;
-                            
-                            // 3. Sort by month (chronological order within same year)
-                            const aMonth = extractMonthFromPhotoName(a.key);
-                            const bMonth = extractMonthFromPhotoName(b.key);
-                            if (aMonth && bMonth && aMonth !== bMonth) {
-                                const monthOrder = [
-                                    "January", "February", "March", "April", "May", "June",
-                                    "July", "August", "September", "October", "November", "December"
-                                ];
-                                return monthOrder.indexOf(aMonth) - monthOrder.indexOf(bMonth);
-                            }
-                            if (aMonth && !bMonth) return -1;
-                            if (!aMonth && bMonth) return 1;
-                            
-                            // 4. Finally sort by photo key as tiebreaker
+                            // 2. Sort by photo key as tiebreaker
                             return a.key.localeCompare(b.key);
                         });
                         
