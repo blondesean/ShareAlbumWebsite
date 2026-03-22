@@ -63,8 +63,8 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
     const ALL_MONTHS = ["January", "February", "March", "April", "May", "June",
         "July", "August", "September", "October", "November", "December"];
     const monthTags = new Set(ALL_MONTHS);
-    const [selectedYears, setSelectedYears] = useState<Set<string>>(new Set());
-    const [selectedMonths, setSelectedMonths] = useState<Set<string>>(new Set());
+    const [selectedYear, setSelectedYear] = useState<string | null>(null);
+    const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
     const [showYearDropdown, setShowYearDropdown] = useState(false);
     const [showMonthDropdown, setShowMonthDropdown] = useState(false);
     const [uploading, setUploading] = useState(false);
@@ -75,7 +75,6 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
     const [showBulkTagDropdown, setShowBulkTagDropdown] = useState(false);
     const [isMobile, setIsMobile] = useState(false);
     const [zoomedPhoto, setZoomedPhoto] = useState<Photo | null>(null);
-    const [favoritesLoaded, setFavoritesLoaded] = useState(false);
 
     // Detect mobile device
     useEffect(() => {
@@ -89,18 +88,24 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
     }, []);
     const [loading, setLoading] = useState(false);
     const [hasMore, setHasMore] = useState(true);
-    const [nextToken, setNextToken] = useState<string | null>(null);
     const [isRequestInProgress, setIsRequestInProgress] = useState(false);
 
     // Refs for scroll handler to avoid stale closures and prevent frequent re-registration
     const hasMoreRef = useRef(hasMore);
     const loadingRef = useRef(loading);
-    
+    const nextTokenRef = useRef<string | null>(sessionStorage.getItem('albumNextToken'));
+    const selectedYearRef = useRef<string | null>(null);
+    const selectedMonthRef = useRef<string | null>(null);
+    const selectedFilterRef = useRef<string | null>(null);
+    const favoritesLoadedRef = useRef(false);
+    // Local overrides for optimistic favorite state — survives photo list rebuilds
+    const localFavoriteOverrides = useRef<Map<string, boolean>>(new Map());
+
     // Update refs when state changes
     useEffect(() => {
         hasMoreRef.current = hasMore;
     }, [hasMore]);
-    
+
     useEffect(() => {
         loadingRef.current = loading;
     }, [loading]);
@@ -123,7 +128,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             let allPhotos: Photo[] = [];
 
             // Step 1: Load ALL favorites first (only on initial load)
-            if (!loadMore && !favoritesLoaded) {
+            if (!loadMore && !favoritesLoadedRef.current) {
                 try {
                     console.log("Loading all favorites first...");
                     const favoritesApiUrl = import.meta.env.VITE_API_URL.replace("/photos", "/favorites");
@@ -138,15 +143,11 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                         const favoritesData = await favoritesResponse.json();
                         const favoritePhotos = favoritesData.favorites || [];
                         console.log(`Loaded ${favoritePhotos.length} favorite photos (all favorites)`);
-                        
-                        // Mark as favorites and add to photos
-                        const favoritesWithFlag = favoritePhotos.map((photo: Photo) => ({
-                            ...photo,
-                            isFavorite: true,
-                        }));
-                        
-                        allPhotos = [...favoritesWithFlag];
-                        setFavoritesLoaded(true);
+
+                        // Only pin THIS user's favorites at the top — filter to isFavorite: true
+                        // Photos favorited by others will appear in normal scroll with their count badge
+                        allPhotos = favoritePhotos.filter((p: Photo) => p.isFavorite === true);
+                        favoritesLoadedRef.current = true;
                     } else {
                         console.warn("Failed to load favorites, continuing with regular photos");
                     }
@@ -155,17 +156,23 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 }
             }
 
-            // Step 2: Load regular photos (with random starting point and backend filtering)
+            // Step 2: Load regular photos
             let url = import.meta.env.VITE_API_URL;
-            if (loadMore && nextToken) {
-                const params = new URLSearchParams();
-                params.append('limit', '25');
-                params.append('nextToken', nextToken);
-                url += '?' + params.toString();
-            } else {
-                // First load or no pagination - backend will start from random position
-                url += `?limit=25`;
+            const params = new URLSearchParams();
+            params.append('limit', '25');
+            if (nextTokenRef.current) {
+                params.append('nextToken', nextTokenRef.current);
             }
+            if (selectedYearRef.current) {
+                params.append('year', selectedYearRef.current);
+            }
+            if (selectedYearRef.current && selectedMonthRef.current) {
+                params.append('month', selectedMonthRef.current);
+            }
+            if (selectedFilterRef.current) {
+                params.append('tags', selectedFilterRef.current);
+            }
+            url += '?' + params.toString();
 
             const response = await fetch(url, {
                 headers: {
@@ -185,7 +192,13 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             const pagination = data.pagination;
             
             if (pagination) {
-                setNextToken(pagination.nextToken);
+                const newToken = pagination.nextToken || null;
+                nextTokenRef.current = newToken;
+                if (newToken) {
+                    sessionStorage.setItem('albumNextToken', newToken);
+                } else {
+                    sessionStorage.removeItem('albumNextToken');
+                }
                 setHasMore(pagination.hasMore && !!pagination.nextToken);
             } else {
                 setHasMore(false);
@@ -199,12 +212,11 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 isFavorite: photo.isFavorite || false,
             }));
 
-            // If we have favorites loaded, filter out any regular photos that are already favorites
+            // Filter regular photos to avoid duplicating anything already pinned at the top
             let filteredRegularPhotos = regularPhotosWithFavorites;
-            if (favoritesLoaded) {
-                const favoriteKeys = new Set(allPhotos.filter((p: Photo) => p.isFavorite).map((p: Photo) => p.key));
-                filteredRegularPhotos = regularPhotosWithFavorites.filter((photo: Photo) => !favoriteKeys.has(photo.key));
-                console.log(`Filtered out ${regularPhotosWithFavorites.length - filteredRegularPhotos.length} photos that were already in favorites`);
+            if (favoritesLoadedRef.current) {
+                const pinnedKeys = new Set(allPhotos.map((p: Photo) => p.key));
+                filteredRegularPhotos = regularPhotosWithFavorites.filter((photo: Photo) => !pinnedKeys.has(photo.key));
             }
 
             // Combine favorites and regular photos
@@ -228,10 +240,20 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 console.log(`Initial load: ${allPhotos.length} total photos (${favoriteCount} favorites + ${regularCount} regular)`);
             }
             
-            // Build favorites set
+            // Build favorites set, merging API data with any in-session local overrides
             const favSet = new Set<string>(allPhotos.filter((p: Photo) => p.isFavorite).map((p: Photo) => p.key));
+            localFavoriteOverrides.current.forEach((isFav, key) => {
+                if (isFav) favSet.add(key);
+                else favSet.delete(key);
+            });
             if (loadMore) {
-                setFavorites(prev => new Set([...prev, ...favSet]));
+                setFavorites(prev => {
+                    const merged = new Set([...prev, ...favSet]);
+                    localFavoriteOverrides.current.forEach((isFav, key) => {
+                        if (isFav) merged.add(key); else merged.delete(key);
+                    });
+                    return merged;
+                });
             } else {
                 setFavorites(favSet);
             }
@@ -250,6 +272,55 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
     useEffect(() => {
         fetchPhotos();
     }, []);
+
+    // Re-fetch when year or month filter changes (skip on initial mount)
+    const isYearFilterMount = useRef(true);
+    useEffect(() => {
+        if (isYearFilterMount.current) {
+            isYearFilterMount.current = false;
+            return;
+        }
+        // Reset all pagination state synchronously via refs before fetching
+        selectedYearRef.current = selectedYear;
+        selectedMonthRef.current = null; // reset month when year changes
+        setSelectedMonth(null);
+        nextTokenRef.current = null;
+        favoritesLoadedRef.current = false;
+        sessionStorage.removeItem('albumNextToken');
+        setPhotos([]);
+        setHasMore(true);
+        fetchPhotos();
+    }, [selectedYear]);
+
+    const isMonthFilterMount = useRef(true);
+    useEffect(() => {
+        if (isMonthFilterMount.current) {
+            isMonthFilterMount.current = false;
+            return;
+        }
+        selectedMonthRef.current = selectedMonth;
+        nextTokenRef.current = null;
+        favoritesLoadedRef.current = false;
+        sessionStorage.removeItem('albumNextToken');
+        setPhotos([]);
+        setHasMore(true);
+        fetchPhotos();
+    }, [selectedMonth]);
+
+    const isTagFilterMount = useRef(true);
+    useEffect(() => {
+        if (isTagFilterMount.current) {
+            isTagFilterMount.current = false;
+            return;
+        }
+        selectedFilterRef.current = selectedFilter;
+        nextTokenRef.current = null;
+        favoritesLoadedRef.current = false;
+        sessionStorage.removeItem('albumNextToken');
+        setPhotos([]);
+        setHasMore(true);
+        fetchPhotos();
+    }, [selectedFilter]);
 
     // Infinite scroll effect
     useEffect(() => {
@@ -342,9 +413,16 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
         });
     };
 
+    const isPhotoFavorited = (photoKey: string): boolean => {
+        const override = localFavoriteOverrides.current.get(photoKey);
+        return override !== undefined ? override : favorites.has(photoKey);
+    };
+
     const toggleFavorite = async (photoKey: string) => {
         // Optimistically update UI first
-        const isFavorite = favorites.has(photoKey);
+        const isFavorite = isPhotoFavorited(photoKey);
+        // Record override so it survives photo list rebuilds
+        localFavoriteOverrides.current.set(photoKey, !isFavorite);
         const newFavorites = new Set(favorites);
         if (isFavorite) {
             newFavorites.delete(photoKey);
@@ -381,6 +459,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             setError(err.message);
             
             // Revert the optimistic update on error
+            localFavoriteOverrides.current.set(photoKey, isFavorite);
             setFavorites(favorites); // Restore original state
         }
     };
@@ -738,14 +817,6 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
         event.target.value = '';
     };
 
-    // Count how many photos have each tag
-    const getTagCount = (tag: string) => {
-        return photos.filter(photo => {
-            const tags = photoTags.get(photo.key) || new Set<string>();
-            return tags.has(tag);
-        }).length;
-    };
-
     const filteredPhotos = photos.filter((photo) => {
         const tags = photoTags.get(photo.key) || new Set<string>();
         
@@ -754,16 +825,14 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             return false;
         }
         
-        // Apply year filters if any selected
-        if (selectedYears.size > 0) {
-            const hasSelectedYear = Array.from(selectedYears).some(year => tags.has(year));
-            if (!hasSelectedYear) return false;
+        // Apply year filter if selected (client-side check on already-loaded photos)
+        if (selectedYear && !tags.has(selectedYear)) {
+            return false;
         }
         
-        // Apply month filters if any selected
-        if (selectedMonths.size > 0) {
-            const hasSelectedMonth = Array.from(selectedMonths).some(month => tags.has(month));
-            if (!hasSelectedMonth) return false;
+        // Apply month filter if selected
+        if (selectedMonth && !tags.has(selectedMonth)) {
+            return false;
         }
         
         return true;
@@ -1072,15 +1141,15 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                     onClick={(e) => {
                         e.stopPropagation();
                         setSelectedFilter(null);
-                        setSelectedYears(new Set());
-                        setSelectedMonths(new Set());
+                        setSelectedYear(null);
+                        setSelectedMonth(null);
                     }}
                     style={{
                         padding: "6px 12px",
                         border: "1px solid #ccc",
                         borderRadius: "4px",
-                        background: selectedFilter === null && selectedYears.size === 0 && selectedMonths.size === 0 ? "#007bff" : "white",
-                        color: selectedFilter === null && selectedYears.size === 0 && selectedMonths.size === 0 ? "white" : "black",
+                        background: selectedFilter === null && selectedYear === null && selectedMonth === null ? "#007bff" : "white",
+                        color: selectedFilter === null && selectedYear === null && selectedMonth === null ? "white" : "black",
                         cursor: "pointer",
                     }}
                 >
@@ -1099,13 +1168,13 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                             padding: "6px 12px",
                             border: "1px solid #28a745",
                             borderRadius: "4px",
-                            background: selectedYears.size > 0 ? "#28a745" : "white",
-                            color: selectedYears.size > 0 ? "white" : "#28a745",
+                            background: selectedYear !== null ? "#28a745" : "white",
+                            color: selectedYear !== null ? "white" : "#28a745",
                             cursor: "pointer",
                             fontWeight: "bold",
                         }}
                     >
-                        Years {selectedYears.size > 0 ? `(${selectedYears.size})` : ""} ▼
+                        Year {selectedYear ? `(${selectedYear})` : ""} ▼
                     </button>
                     {showYearDropdown && (
                         <div
@@ -1125,45 +1194,36 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                             }}
                         >
                                 {Array.from(yearTags).sort().map((year: string) => (
-                                    <label
+                                    <div
                                         key={year}
+                                        onClick={() => {
+                                            setSelectedYear(selectedYear === year ? null : year);
+                                            setShowYearDropdown(false);
+                                        }}
                                         style={{
                                             display: "flex",
                                             alignItems: "center",
                                             gap: "8px",
                                             padding: "8px 12px",
                                             cursor: "pointer",
-                                            backgroundColor: selectedYears.has(year) ? "#d4edda" : "transparent",
+                                            backgroundColor: selectedYear === year ? "#d4edda" : "transparent",
                                         }}
                                         onMouseEnter={(e) => {
-                                            if (!selectedYears.has(year)) {
+                                            if (selectedYear !== year) {
                                                 e.currentTarget.style.backgroundColor = "#f8f9fa";
                                             }
                                         }}
                                         onMouseLeave={(e) => {
-                                            if (!selectedYears.has(year)) {
+                                            if (selectedYear !== year) {
                                                 e.currentTarget.style.backgroundColor = "transparent";
                                             }
                                         }}
                                     >
-                                        <input
-                                            type="checkbox"
-                                            checked={selectedYears.has(year)}
-                                            onChange={() => {
-                                                const newSelected = new Set(selectedYears);
-                                                if (newSelected.has(year)) {
-                                                    newSelected.delete(year);
-                                                } else {
-                                                    newSelected.add(year);
-                                                }
-                                                setSelectedYears(newSelected);
-                                            }}
-                                            style={{ cursor: "pointer" }}
-                                        />
                                         <span style={{ fontWeight: "bold", color: "#155724" }}>
-                                            {year} ({getTagCount(year)})
+                                            {year}
                                         </span>
-                                    </label>
+                                        {selectedYear === year && <span style={{ marginLeft: "auto", color: "#28a745" }}>✓</span>}
+                                    </div>
                                 ))}
                             </div>
                         )}
@@ -1175,20 +1235,24 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                         <button
                             onClick={(e) => {
                                 e.stopPropagation();
+                                if (!selectedYear) return;
                                 setShowMonthDropdown(!showMonthDropdown);
                                 setShowYearDropdown(false);
                             }}
+                            disabled={!selectedYear}
+                            title={!selectedYear ? "Select a year first" : undefined}
                             style={{
                                 padding: "6px 12px",
                                 border: "1px solid #007bff",
                                 borderRadius: "4px",
-                                background: selectedMonths.size > 0 ? "#007bff" : "white",
-                                color: selectedMonths.size > 0 ? "white" : "#007bff",
-                                cursor: "pointer",
+                                background: selectedMonth !== null ? "#007bff" : "white",
+                                color: selectedMonth !== null ? "white" : "#007bff",
+                                cursor: selectedYear ? "pointer" : "not-allowed",
                                 fontWeight: "bold",
+                                opacity: selectedYear ? 1 : 0.45,
                             }}
                         >
-                            Months {selectedMonths.size > 0 ? `(${selectedMonths.size})` : ""} ▼
+                            Month {selectedMonth ? `(${selectedMonth})` : ""} ▼
                         </button>
                         {showMonthDropdown && (
                             <div
@@ -1212,45 +1276,36 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                     ];
                                     return monthOrder.indexOf(a) - monthOrder.indexOf(b);
                                 }).map((month: string) => (
-                                    <label
+                                    <div
                                         key={month}
+                                        onClick={() => {
+                                            setSelectedMonth(selectedMonth === month ? null : month);
+                                            setShowMonthDropdown(false);
+                                        }}
                                         style={{
                                             display: "flex",
                                             alignItems: "center",
                                             gap: "8px",
                                             padding: "8px 12px",
                                             cursor: "pointer",
-                                            backgroundColor: selectedMonths.has(month) ? "#cce7ff" : "transparent",
+                                            backgroundColor: selectedMonth === month ? "#cce7ff" : "transparent",
                                         }}
                                         onMouseEnter={(e) => {
-                                            if (!selectedMonths.has(month)) {
+                                            if (selectedMonth !== month) {
                                                 e.currentTarget.style.backgroundColor = "#f8f9fa";
                                             }
                                         }}
                                         onMouseLeave={(e) => {
-                                            if (!selectedMonths.has(month)) {
+                                            if (selectedMonth !== month) {
                                                 e.currentTarget.style.backgroundColor = "transparent";
                                             }
                                         }}
                                     >
-                                        <input
-                                            type="checkbox"
-                                            checked={selectedMonths.has(month)}
-                                            onChange={() => {
-                                                const newSelected = new Set(selectedMonths);
-                                                if (newSelected.has(month)) {
-                                                    newSelected.delete(month);
-                                                } else {
-                                                    newSelected.add(month);
-                                                }
-                                                setSelectedMonths(newSelected);
-                                            }}
-                                            style={{ cursor: "pointer" }}
-                                        />
                                         <span style={{ fontWeight: "bold", color: "#0056b3" }}>
-                                            {month} ({getTagCount(month)})
+                                            {month}
                                         </span>
-                                    </label>
+                                        {selectedMonth === month && <span style={{ marginLeft: "auto", color: "#007bff" }}>✓</span>}
+                                    </div>
                                 ))}
                             </div>
                         )}
@@ -1259,28 +1314,25 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                 
                 {/* Regular Tags Section */}
                 <span style={{ fontWeight: "bold" }}>People & Tags:</span>
-                {availableTags.map((tag: string) => {
-                    const count = getTagCount(tag);
-                    return (
-                        <button
-                            key={tag}
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                setSelectedFilter(selectedFilter === tag ? null : tag);
-                            }}
-                            style={{
-                                padding: "6px 12px",
-                                border: "1px solid #ccc",
-                                borderRadius: "4px",
-                                background: selectedFilter === tag ? "#007bff" : "white",
-                                color: selectedFilter === tag ? "white" : "black",
-                                cursor: "pointer",
-                            }}
-                        >
-                            {tag} ({count})
-                        </button>
-                    );
-                })}
+                {availableTags.map((tag: string) => (
+                    <button
+                        key={tag}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedFilter(selectedFilter === tag ? null : tag);
+                        }}
+                        style={{
+                            padding: "6px 12px",
+                            border: "1px solid #ccc",
+                            borderRadius: "4px",
+                            background: selectedFilter === tag ? "#007bff" : "white",
+                            color: selectedFilter === tag ? "white" : "black",
+                            cursor: "pointer",
+                        }}
+                    >
+                        {tag}
+                    </button>
+                ))}
             </div>
 
             {error && <p style={{ color: "red" }}>Error: {error}</p>}
@@ -1335,7 +1387,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                     style={{
                                         width: "100%",
                                         borderRadius: "8px",
-                                        border: favorites.has(photo.key) ? "4px solid gold" : "none",
+                                        border: isPhotoFavorited(photo.key) ? "4px solid gold" : "none",
                                         maxWidth: "100%",
                                         height: "auto",
                                     }}
@@ -1403,13 +1455,6 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                                     </div>
                                 )}
                             </div>
-                            <p style={{ 
-                                fontSize: "0.9rem", 
-                                wordWrap: "break-word", 
-                                overflowWrap: "break-word",
-                                hyphens: "auto",
-                                margin: "4px 0"
-                            }}>{photo.key}</p>
                             {tags.size > 0 && (
                                 <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginTop: "4px" }}>
                                     {Array.from(tags).map((tag) => {
@@ -1506,7 +1551,7 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
                         onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f0f0f0")}
                         onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
                     >
-                        {favorites.has(contextMenu.photoKey) ? "Remove Favorite" : "Make Favorite"}
+                        {isPhotoFavorited(contextMenu.photoKey) ? "Remove Favorite" : "Make Favorite"}
                     </button>
                     <button
                         onClick={() => {
