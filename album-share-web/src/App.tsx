@@ -266,6 +266,18 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
         } finally {
             setLoading(false);
             setIsRequestInProgress(false);
+
+            // If the page isn't scrollable after loading, auto-load more
+            // This handles the case where few photos don't fill the viewport
+            requestAnimationFrame(() => {
+                if (
+                    document.documentElement.scrollHeight <= window.innerHeight + 100 &&
+                    hasMoreRef.current &&
+                    !loadingRef.current
+                ) {
+                    fetchPhotos(true);
+                }
+            });
         }
     };
 
