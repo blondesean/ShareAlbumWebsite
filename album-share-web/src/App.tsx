@@ -837,16 +837,8 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             return false;
         }
         
-        // Year and month filtering is handled server-side via query params,
-        // so only apply client-side if tags have actually been loaded for this photo
-        if (selectedYear && tags.size > 0 && !tags.has(selectedYear)) {
-            return false;
-        }
+        // Year and month filtering is handled server-side via API params
 
-        if (selectedMonth && tags.size > 0 && !tags.has(selectedMonth)) {
-            return false;
-        }
-        
         return true;
     });
 
