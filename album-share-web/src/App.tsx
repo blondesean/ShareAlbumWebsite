@@ -25,7 +25,7 @@ interface Photo {
     favoriteCount?: number;
 }
 
-const BASE_TAGS = import.meta.env.VITE_AVAILABLE_TAGS?.split(",") || 
+const BASE_TAGS = import.meta.env.VITE_AVAILABLE_TAGS?.split(",").map((t: string) => t.trim().replace(/^=/, '')) ||
     ["Jeff", "Karen", "Sean", "Kati", "Julia"
         , "Granmare", "Papa", "Gram", "Grandad"
         , "Mark", "Bob", "Greg", "Elizabeth", "Carie", "Ann Marie", "Mike"
@@ -825,13 +825,13 @@ function PhotoApp({ signOut }: { signOut?: () => void }) {
             return false;
         }
         
-        // Apply year filter if selected (client-side check on already-loaded photos)
-        if (selectedYear && !tags.has(selectedYear)) {
+        // Year and month filtering is handled server-side via query params,
+        // so only apply client-side if tags have actually been loaded for this photo
+        if (selectedYear && tags.size > 0 && !tags.has(selectedYear)) {
             return false;
         }
-        
-        // Apply month filter if selected
-        if (selectedMonth && !tags.has(selectedMonth)) {
+
+        if (selectedMonth && tags.size > 0 && !tags.has(selectedMonth)) {
             return false;
         }
         
